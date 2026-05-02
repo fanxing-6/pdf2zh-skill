@@ -105,9 +105,9 @@ python scripts/pdf2zh_pipeline.py paths
 
 1. 若输入是 PDF，则先调用 DOC2X 转成 TeX 项目
 2. 合并主 TeX、屏蔽脆弱 LaTeX 区块、抽取可翻译自然语言片段
-3. 先基于全文片段生成 article-level `glossary.json`
-4. 使用用户提供的翻译 API 并行翻译片段，并增量写入 `translations.jsonl`
-5. 对译文做一次术语一致性复审，输出 `translations_reviewed.jsonl` 与 `consistency_report.json`
+3. 先基于全文片段生成 article-level `glossary_English.json`
+4. 使用用户提供的翻译 API 并行翻译片段，并增量写入 `translations_中文.jsonl`
+5. 对译文做一次术语一致性复审，输出 `translations_reviewed_中文.jsonl` 与 `consistency_report_中文.json`
 6. 重新组装 `merge_中文.tex`
 7. 编译出中文 PDF，并写出 `run_summary.json`
 8. 若 `--rebuild-mode vision-rebuild`，额外生成 `vision_pack/`
@@ -172,7 +172,7 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
 
 `translate` 默认以 `50` 并发运行，并默认启用更积极的失败重试。若目标接口存在严格速率限制，再按需下调 `--workers` 或 `--max-retries`。
 
-如果论文长度足够且存在重复核心术语，当前流程会自动生成 `glossary.json`，并在翻译后对命中术语的 segment 进行二次一致性修订。短文档或术语重复度不足时，glossary 可能为空，此时一致性复审会自动退化为 no-op，并在 `consistency_report.json` 中写明原因。
+如果论文长度足够且存在重复核心术语，当前流程会自动生成 `glossary_English.json`，并在翻译后对命中术语的 segment 进行二次一致性修订。短文档或术语重复度不足时，glossary 可能为空，此时一致性复审会自动退化为 no-op，并在 `consistency_report_中文.json` 中写明原因。
 
 ## `vision-rebuild` SOP
 
@@ -207,6 +207,19 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
 - 如果源 PDF 来自已挂载的 Windows 盘符目录，脚本会额外给出对应的 Windows 可见路径
 
 这意味着你在对话中汇报结果时，应优先给用户 Windows 可见路径，而不是只给 WSL 内部路径。
+
+## 默认产物命名
+
+默认情况下，Skill 会尽量给带有明确语言属性的产物追加语言后缀：
+
+- 英文合并稿：`merge_English.tex`
+- 中文合并稿：`merge_中文.tex`
+- 中文 PDF：`merge_中文.pdf`
+- 英文分段文件：`segments_English.jsonl`
+- 英文术语表：`glossary_English.json`
+- 中文翻译结果：`translations_中文.jsonl`
+- 中文复审结果：`translations_reviewed_中文.jsonl`
+- 中文一致性报告：`consistency_report_中文.json`
 
 ## 资源
 

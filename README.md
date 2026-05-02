@@ -11,6 +11,17 @@ Convert academic PDF papers into Chinese PDF outputs while preserving LaTeX stru
 - Rebuild `merge_中文.tex` and compile a Chinese PDF
 - Optionally generate a vision review pack for manual layout rebuilding
 
+## Default output names
+
+- `merge_English.tex`
+- `merge_中文.tex`
+- `merge_中文.pdf`
+- `segments_English.jsonl`
+- `glossary_English.json`
+- `translations_中文.jsonl`
+- `translations_reviewed_中文.jsonl`
+- `consistency_report_中文.json`
+
 ## Quick start
 
 Create a `.env` from `.env.example` and fill in your credentials:

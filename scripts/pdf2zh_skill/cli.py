@@ -8,6 +8,13 @@ from .vision import *
 
 ENGLISH_MERGED_BASENAME = "merge_English"
 CHINESE_MERGED_BASENAME = "merge_中文"
+ENGLISH_SEGMENTS_NAME = "segments_English.jsonl"
+ENGLISH_DEBUG_SEGMENTS_NAME = "debug_segments_English.html"
+ENGLISH_GLOSSARY_NAME = "glossary_English.json"
+ENGLISH_GLOSSARY_CANDIDATES_NAME = "glossary_candidates_English.json"
+CHINESE_TRANSLATIONS_NAME = "translations_中文.jsonl"
+CHINESE_REVIEWED_TRANSLATIONS_NAME = "translations_reviewed_中文.jsonl"
+CHINESE_CONSISTENCY_REPORT_NAME = "consistency_report_中文.json"
 
 
 def extract_env_file_arg(argv: list[str] | None) -> str | None:
@@ -69,9 +76,9 @@ def cmd_prepare(args: argparse.Namespace) -> None:
         "nodes": [asdict(node) for node in nodes],
     }
     (work / "pipeline_state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_debug_html(work / "debug_segments.html", nodes)
+    write_debug_html(work / ENGLISH_DEBUG_SEGMENTS_NAME, nodes)
     segments = [{"id": node.segment_id, "text": node.text} for node in nodes if node.kind == TRANSLATE]
-    write_jsonl(work / "segments.jsonl", segments)
+    write_jsonl(work / ENGLISH_SEGMENTS_NAME, segments)
     print(f"main={main}")
     print(f"segments={len(segments)}")
     print(work)
@@ -114,7 +121,7 @@ def cmd_prompts(args: argparse.Namespace) -> None:
 
 def cmd_glossary(args: argparse.Namespace) -> None:
     work = Path(args.work).resolve()
-    segments_path = work / "segments.jsonl"
+    segments_path = work / ENGLISH_SEGMENTS_NAME
     if not segments_path.is_file():
         die(f"missing segments file: {segments_path}; run prepare first")
 
@@ -124,8 +131,8 @@ def cmd_glossary(args: argparse.Namespace) -> None:
         model=args.model,
     )
 
-    out = Path(args.out).resolve() if args.out else work / "glossary.json"
-    candidates_path = work / "glossary_candidates.json"
+    out = Path(args.out).resolve() if args.out else work / ENGLISH_GLOSSARY_NAME
+    candidates_path = work / ENGLISH_GLOSSARY_CANDIDATES_NAME
     segments = load_jsonl(segments_path)
     candidates = collect_glossary_candidates(segments, max_candidates=args.max_candidates)
     candidates_path.write_text(json.dumps({"candidates": candidates}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -180,7 +187,7 @@ def cmd_glossary(args: argparse.Namespace) -> None:
 
 def cmd_translate(args: argparse.Namespace) -> None:
     work = Path(args.work).resolve()
-    segments_path = work / "segments.jsonl"
+    segments_path = work / ENGLISH_SEGMENTS_NAME
     if not segments_path.is_file():
         die(f"missing segments file: {segments_path}; run prepare first")
 
@@ -190,9 +197,9 @@ def cmd_translate(args: argparse.Namespace) -> None:
         model=args.model,
     )
 
-    out = Path(args.out).resolve() if args.out else work / "translations.jsonl"
+    out = Path(args.out).resolve() if args.out else work / CHINESE_TRANSLATIONS_NAME
     segments = load_jsonl(segments_path)
-    glossary_terms = load_glossary_terms(Path(args.glossary).resolve()) if args.glossary else load_glossary_terms(work / "glossary.json")
+    glossary_terms = load_glossary_terms(Path(args.glossary).resolve()) if args.glossary else load_glossary_terms(work / ENGLISH_GLOSSARY_NAME)
     glossary_text = format_glossary_for_prompt(glossary_terms)
     if glossary_terms:
         log(f"Translate: loaded {len(glossary_terms)} glossary terms")
@@ -276,7 +283,7 @@ def cmd_translate(args: argparse.Namespace) -> None:
 
 def cmd_review_consistency(args: argparse.Namespace) -> None:
     work = Path(args.work).resolve()
-    segments_path = work / "segments.jsonl"
+    segments_path = work / ENGLISH_SEGMENTS_NAME
     if not segments_path.is_file():
         die(f"missing segments file: {segments_path}; run prepare first")
 
@@ -290,12 +297,12 @@ def cmd_review_consistency(args: argparse.Namespace) -> None:
     if not translations_path.is_file():
         die(f"missing translations file: {translations_path}")
 
-    out = Path(args.out).resolve() if args.out else work / "translations_reviewed.jsonl"
-    report_path = Path(args.report).resolve() if args.report else work / "consistency_report.json"
+    out = Path(args.out).resolve() if args.out else work / CHINESE_REVIEWED_TRANSLATIONS_NAME
+    report_path = Path(args.report).resolve() if args.report else work / CHINESE_CONSISTENCY_REPORT_NAME
 
     segments = load_jsonl(segments_path)
     original_rows = load_jsonl(translations_path)
-    glossary_path = Path(args.glossary).resolve() if args.glossary else work / "glossary.json"
+    glossary_path = Path(args.glossary).resolve() if args.glossary else work / ENGLISH_GLOSSARY_NAME
     glossary_terms = load_glossary_terms(glossary_path)
     if not glossary_terms:
         write_jsonl(out, original_rows)
@@ -532,7 +539,7 @@ def maybe_existing_project(project: Path) -> bool:
     return project.is_dir() and any(project.rglob("*.tex"))
 
 def maybe_existing_prepare(work: Path) -> bool:
-    return (work / "pipeline_state.json").is_file() and (work / "segments.jsonl").is_file()
+    return (work / "pipeline_state.json").is_file() and (work / ENGLISH_SEGMENTS_NAME).is_file()
 
 def write_run_summary(
     path: Path,
@@ -552,12 +559,13 @@ def write_run_summary(
         "project": str(project),
         "work": str(work),
         "pdf": str(pdf),
-        "translations": str(work / "translations.jsonl"),
-        "reviewed_translations": str(work / "translations_reviewed.jsonl"),
+        "segments_english": str(work / ENGLISH_SEGMENTS_NAME),
+        "glossary_english": str(work / ENGLISH_GLOSSARY_NAME),
+        "translations": str(work / CHINESE_TRANSLATIONS_NAME),
+        "reviewed_translations": str(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
         "english_tex": str(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
         "tex": str(work / f"{CHINESE_MERGED_BASENAME}.tex"),
-        "glossary": str(work / "glossary.json"),
-        "consistency_report": str(work / "consistency_report.json"),
+        "consistency_report": str(work / CHINESE_CONSISTENCY_REPORT_NAME),
         "skill_home": str(skill_home_dir()),
         "tmp_root": str(skill_tmp_dir()),
     }
@@ -568,12 +576,13 @@ def write_run_summary(
             "project_windows": windows_visible_path(project),
             "work_windows": windows_visible_path(work),
             "pdf_windows": windows_visible_path(pdf),
-            "translations_windows": windows_visible_path(work / "translations.jsonl"),
-            "reviewed_translations_windows": windows_visible_path(work / "translations_reviewed.jsonl"),
+            "segments_english_windows": windows_visible_path(work / ENGLISH_SEGMENTS_NAME),
+            "glossary_english_windows": windows_visible_path(work / ENGLISH_GLOSSARY_NAME),
+            "translations_windows": windows_visible_path(work / CHINESE_TRANSLATIONS_NAME),
+            "reviewed_translations_windows": windows_visible_path(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
             "english_tex_windows": windows_visible_path(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
             "tex_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.tex"),
-            "glossary_windows": windows_visible_path(work / "glossary.json"),
-            "consistency_report_windows": windows_visible_path(work / "consistency_report.json"),
+            "consistency_report_windows": windows_visible_path(work / CHINESE_CONSISTENCY_REPORT_NAME),
             "skill_home_windows": windows_visible_path(skill_home_dir()),
             "tmp_root_windows": windows_visible_path(skill_tmp_dir()),
             "vision_pack_windows": windows_visible_path(vision_pack) if vision_pack else None,
@@ -637,7 +646,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         cmd_glossary(
             argparse.Namespace(
                 work=str(work_dir),
-                out=str(work_dir / "glossary.json"),
+                out=str(work_dir / ENGLISH_GLOSSARY_NAME),
                 api_key=args.translation_api_key,
                 base_url=args.translation_base_url,
                 model=args.translation_model,
@@ -652,12 +661,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     cmd_translate(
         argparse.Namespace(
             work=str(work_dir),
-            out=str(work_dir / "translations.jsonl"),
+            out=str(work_dir / CHINESE_TRANSLATIONS_NAME),
             api_key=args.translation_api_key,
             base_url=args.translation_base_url,
             model=args.translation_model,
             requirement=args.requirement,
-            glossary=str(work_dir / "glossary.json") if not args.skip_glossary else "",
+            glossary=str(work_dir / ENGLISH_GLOSSARY_NAME) if not args.skip_glossary else "",
             timeout_seconds=args.translate_timeout_seconds,
             max_retries=args.max_retries,
             workers=args.workers,
@@ -666,15 +675,15 @@ def cmd_run(args: argparse.Namespace) -> None:
             force=args.force_translate,
         )
     )
-    translations_for_apply = work_dir / "translations.jsonl"
+    translations_for_apply = work_dir / CHINESE_TRANSLATIONS_NAME
     if not args.skip_consistency_review and not args.skip_glossary:
         cmd_review_consistency(
             argparse.Namespace(
                 work=str(work_dir),
-                translations=str(work_dir / "translations.jsonl"),
-                out=str(work_dir / "translations_reviewed.jsonl"),
-                report=str(work_dir / "consistency_report.json"),
-                glossary=str(work_dir / "glossary.json"),
+                translations=str(work_dir / CHINESE_TRANSLATIONS_NAME),
+                out=str(work_dir / CHINESE_REVIEWED_TRANSLATIONS_NAME),
+                report=str(work_dir / CHINESE_CONSISTENCY_REPORT_NAME),
+                glossary=str(work_dir / ENGLISH_GLOSSARY_NAME),
                 api_key=args.translation_api_key,
                 base_url=args.translation_base_url,
                 model=args.translation_model,
@@ -684,7 +693,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 workers=args.workers,
             )
         )
-        translations_for_apply = work_dir / "translations_reviewed.jsonl"
+        translations_for_apply = work_dir / CHINESE_REVIEWED_TRANSLATIONS_NAME
     cmd_apply(argparse.Namespace(work=str(work_dir), translations=str(translations_for_apply)))
     cmd_compile(
         argparse.Namespace(
@@ -758,7 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     glossary_cmd = sub.add_parser("build-glossary", help="build an article-level glossary from segments.jsonl")
     glossary_cmd.add_argument("--work", required=True)
-    glossary_cmd.add_argument("--out", help="default: <work>/glossary.json")
+    glossary_cmd.add_argument("--out", help=f"default: <work>/{ENGLISH_GLOSSARY_NAME}")
     glossary_cmd.add_argument("--api-key", help="translation API key; prefer PDF2ZH_TRANSLATION_API_KEY in .env")
     glossary_cmd.add_argument("--base-url", help="OpenAI-compatible chat completions base URL; prefer PDF2ZH_TRANSLATION_BASE_URL in .env")
     glossary_cmd.add_argument("--model", help="translation model name; prefer PDF2ZH_TRANSLATION_MODEL in .env")
@@ -771,12 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     translate = sub.add_parser("translate", help="translate segments.jsonl with an OpenAI-compatible chat completions API")
     translate.add_argument("--work", required=True)
-    translate.add_argument("--out", help="default: <work>/translations.jsonl")
+    translate.add_argument("--out", help=f"default: <work>/{CHINESE_TRANSLATIONS_NAME}")
     translate.add_argument("--api-key", help="translation API key; prefer PDF2ZH_TRANSLATION_API_KEY in .env")
     translate.add_argument("--base-url", help="OpenAI-compatible chat completions base URL; prefer PDF2ZH_TRANSLATION_BASE_URL in .env")
     translate.add_argument("--model", help="translation model name; prefer PDF2ZH_TRANSLATION_MODEL in .env")
     translate.add_argument("--requirement", default="")
-    translate.add_argument("--glossary", help="default: <work>/glossary.json")
+    translate.add_argument("--glossary", help=f"default: <work>/{ENGLISH_GLOSSARY_NAME}")
     translate.add_argument("--timeout-seconds", type=int, default=120)
     translate.add_argument("--max-retries", type=int, default=8)
     translate.add_argument("--workers", type=int, default=50, help="number of concurrent translation requests")
@@ -788,9 +797,9 @@ def build_parser() -> argparse.ArgumentParser:
     review_cmd = sub.add_parser("review-consistency", help="revise translations for article-level terminology consistency")
     review_cmd.add_argument("--work", required=True)
     review_cmd.add_argument("--translations", required=True)
-    review_cmd.add_argument("--out", help="default: <work>/translations_reviewed.jsonl")
-    review_cmd.add_argument("--report", help="default: <work>/consistency_report.json")
-    review_cmd.add_argument("--glossary", help="default: <work>/glossary.json")
+    review_cmd.add_argument("--out", help=f"default: <work>/{CHINESE_REVIEWED_TRANSLATIONS_NAME}")
+    review_cmd.add_argument("--report", help=f"default: <work>/{CHINESE_CONSISTENCY_REPORT_NAME}")
+    review_cmd.add_argument("--glossary", help=f"default: <work>/{ENGLISH_GLOSSARY_NAME}")
     review_cmd.add_argument("--api-key", help="translation API key; prefer PDF2ZH_TRANSLATION_API_KEY in .env")
     review_cmd.add_argument("--base-url", help="OpenAI-compatible chat completions base URL; prefer PDF2ZH_TRANSLATION_BASE_URL in .env")
     review_cmd.add_argument("--model", help="translation model name; prefer PDF2ZH_TRANSLATION_MODEL in .env")
