@@ -1,0 +1,4 @@
+interface:
+  display_name: "PDF2ZH Skill"
+  short_description: "英文论文 PDF 转 LaTeX 后生成中文 PDF"
+  default_prompt: "Use $pdf2zh-skill to convert an English academic PDF into a Chinese LaTeX/PDF deliverable."
