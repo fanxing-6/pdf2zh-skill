@@ -88,7 +88,7 @@ python scripts/pdf2zh_pipeline.py paths
 1. 先完整执行 `rebuild` 路径，得到可编译的中文 PDF
 2. 额外生成 `vision_pack/`，把原 PDF 与当前中文 PDF 的对应页面渲染成图片
 3. Codex 直接查看这些页面图片，比较标题页、图注块、列表块、段间距、图文顺序和局部英文保留情况
-4. Codex 修改 `merge_translate_zh.tex`
+4. Codex 修改 `merge_中文.tex`
 5. 重新编译并迭代，直到视觉版式更接近原 PDF
 
 视觉能力来自 Codex 自身，不来自外部视觉 API。
@@ -108,7 +108,7 @@ python scripts/pdf2zh_pipeline.py paths
 3. 先基于全文片段生成 article-level `glossary.json`
 4. 使用用户提供的翻译 API 并行翻译片段，并增量写入 `translations.jsonl`
 5. 对译文做一次术语一致性复审，输出 `translations_reviewed.jsonl` 与 `consistency_report.json`
-6. 重新组装 `merge_translate_zh.tex`
+6. 重新组装 `merge_中文.tex`
 7. 编译出中文 PDF，并写出 `run_summary.json`
 8. 若 `--rebuild-mode vision-rebuild`，额外生成 `vision_pack/`
 
@@ -121,31 +121,31 @@ python scripts/pdf2zh_pipeline.py paths
 推荐的正式入口：
 
 ```bash
-python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-mode rebuild --doc2x-model v2 --workers 6
+python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-mode rebuild --doc2x-model v2 --workers 50
 
-python scripts/pdf2zh_pipeline.py run --url https://example.com/paper.pdf --method doc2x --rebuild-mode rebuild --doc2x-model v2 --workers 6
+python scripts/pdf2zh_pipeline.py run --url https://example.com/paper.pdf --method doc2x --rebuild-mode rebuild --doc2x-model v2 --workers 50
 
-python scripts/pdf2zh_pipeline.py run --project relative/or/external/tex-project --rebuild-mode rebuild --workers 6
+python scripts/pdf2zh_pipeline.py run --project relative/or/external/tex-project --rebuild-mode rebuild --workers 50
 ```
 
 如果需要手工指定任务目录：
 
 ```bash
-python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-mode rebuild --output-dir "${PDF2ZH_SKILL_TMPDIR}/my-task" --workers 6
+python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-mode rebuild --output-dir "${PDF2ZH_SKILL_TMPDIR}/my-task" --workers 50
 ```
 
 `vision-rebuild` 正式入口：
 
 ```bash
-python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-mode vision-rebuild --vision-pages 1-3 --workers 6
+python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-mode vision-rebuild --vision-pages 1-3 --workers 50
 
-python scripts/pdf2zh_pipeline.py run --project relative/or/external/tex-project --source-pdf relative/or/external/original.pdf --rebuild-mode vision-rebuild --vision-pages 1-3 --workers 6
+python scripts/pdf2zh_pipeline.py run --project relative/or/external/tex-project --source-pdf relative/or/external/original.pdf --rebuild-mode vision-rebuild --vision-pages 1-3 --workers 50
 ```
 
 单独生成视觉对照包：
 
 ```bash
-python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf --translated-pdf zh/merge_translate_zh.pdf --tex zh/merge_translate_zh.tex --out work/vision_pack --pages 1-3
+python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf --translated-pdf zh/merge_中文.pdf --tex zh/merge_中文.tex --out work/vision_pack --pages 1-3
 ```
 
 拆阶段调试时再使用这些子命令：
@@ -153,7 +153,7 @@ python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf 
 ```bash
 python scripts/pdf2zh_pipeline.py convert --pdf paper.pdf --out work/pdf_tex --method doc2x --doc2x-model v2
 python scripts/pdf2zh_pipeline.py prepare --project work/pdf_tex --work work/zh
-python scripts/pdf2zh_pipeline.py translate --work work/zh --out work/zh/translations.jsonl --workers 6
+python scripts/pdf2zh_pipeline.py translate --work work/zh --out work/zh/translations.jsonl --workers 50
 python scripts/pdf2zh_pipeline.py apply --work work/zh --translations work/zh/translations.jsonl
 python scripts/pdf2zh_pipeline.py compile --work work/zh
 ```
@@ -170,7 +170,7 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
 - 修复翻译后 `\item` 与正文粘连导致的未定义命令
 - 优先用 `lualatex` 编译中文输出
 
-`translate` 默认并行运行，请优先通过 `--workers` 控制吞吐，而不是退回串行翻译。
+`translate` 默认以 `50` 并发运行，并默认启用更积极的失败重试。若目标接口存在严格速率限制，再按需下调 `--workers` 或 `--max-retries`。
 
 如果论文长度足够且存在重复核心术语，当前流程会自动生成 `glossary.json`，并在翻译后对命中术语的 segment 进行二次一致性修订。短文档或术语重复度不足时，glossary 可能为空，此时一致性复审会自动退化为 no-op，并在 `consistency_report.json` 中写明原因。
 
@@ -192,7 +192,7 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
    段间距、空行、页间分隔
    局部英文是否应该保留
 5. 不要把中英文长度差异导致的自然分页变化当成视觉重建缺陷。若中文文本变短或变长，从而引起页数变化、图表提前或延后、段落落到相邻页，这属于可接受漂移；视觉重建应优先修复同页内的标题块、作者区、图注块、列表块、对齐方式、空白结构与局部样式错误。
-6. 修改 `merge_translate_zh.tex`，不要直接去改原始 `output.tex`。
+6. 修改 `merge_中文.tex`，不要直接去改原始 `output.tex`。
 7. 重新执行 `compile`。
 8. 若还有明显视觉偏差，继续看图并迭代。
 

@@ -374,6 +374,8 @@ def stage_upload_source(pdf: Path) -> tuple[Path, Path | None]:
     return staged, temp_dir
 
 def download_remote_pdf(url: str, out_dir: Path) -> Path:
+    from .conversion import download_url
+
     out_dir.mkdir(parents=True, exist_ok=True)
     parsed = urlparse(url)
     base_name = Path(parsed.path).name or "remote.pdf"

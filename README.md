@@ -8,7 +8,7 @@ Convert academic PDF papers into Chinese PDF outputs while preserving LaTeX stru
 - Segment translatable prose while preserving fragile LaTeX blocks
 - Translate with a user-provided OpenAI-compatible chat completions API
 - Build a paper-level glossary and run a consistency review pass
-- Rebuild `merge_translate_zh.tex` and compile a Chinese PDF
+- Rebuild `merge_中文.tex` and compile a Chinese PDF
 - Optionally generate a vision review pack for manual layout rebuilding
 
 ## Quick start

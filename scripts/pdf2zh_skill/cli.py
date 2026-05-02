@@ -6,6 +6,10 @@ from .latex_ops import *
 from .translate import *
 from .vision import *
 
+ENGLISH_MERGED_BASENAME = "merge_English"
+CHINESE_MERGED_BASENAME = "merge_中文"
+
+
 def extract_env_file_arg(argv: list[str] | None) -> str | None:
     if not argv:
         return None
@@ -56,7 +60,7 @@ def cmd_prepare(args: argparse.Namespace) -> None:
 
     main = find_main_tex(source)
     merged = sanitize_latex_source(inject_chinese_support(merge_tex(source, main)))
-    (work / "merge.tex").write_text(merged, encoding="utf-8")
+    (work / f"{ENGLISH_MERGED_BASENAME}.tex").write_text(merged, encoding="utf-8")
     nodes = split_nodes(merged)
     state = {
         "source_project": str(project),
@@ -477,7 +481,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
     if reverted:
         print(f"warning: reverted {len(reverted)} risky translations: {', '.join(reverted[:10])}", file=sys.stderr)
 
-    out = work / "merge_translate_zh.tex"
+    out = work / f"{CHINESE_MERGED_BASENAME}.tex"
     final_text = "".join(pieces)
     final_text = normalize_frontmatter_content(final_text)
     final_text = normalize_frontmatter_layout(final_text)
@@ -550,7 +554,8 @@ def write_run_summary(
         "pdf": str(pdf),
         "translations": str(work / "translations.jsonl"),
         "reviewed_translations": str(work / "translations_reviewed.jsonl"),
-        "tex": str(work / "merge_translate_zh.tex"),
+        "english_tex": str(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
+        "tex": str(work / f"{CHINESE_MERGED_BASENAME}.tex"),
         "glossary": str(work / "glossary.json"),
         "consistency_report": str(work / "consistency_report.json"),
         "skill_home": str(skill_home_dir()),
@@ -565,7 +570,8 @@ def write_run_summary(
             "pdf_windows": windows_visible_path(pdf),
             "translations_windows": windows_visible_path(work / "translations.jsonl"),
             "reviewed_translations_windows": windows_visible_path(work / "translations_reviewed.jsonl"),
-            "tex_windows": windows_visible_path(work / "merge_translate_zh.tex"),
+            "english_tex_windows": windows_visible_path(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
+            "tex_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.tex"),
             "glossary_windows": windows_visible_path(work / "glossary.json"),
             "consistency_report_windows": windows_visible_path(work / "consistency_report.json"),
             "skill_home_windows": windows_visible_path(skill_home_dir()),
@@ -610,7 +616,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             if method == "doc2x":
                 if pdf_path is None or not pdf_path.is_file():
                     die("--pdf is required for DOC2X conversion")
-                project = convert_doc2x(pdf_path, convert_dir, args.doc2x_api_key or args.api_key, args.doc2x_model)
+                project = convert_doc2x(pdf_path, convert_dir, args.doc2x_api_key, args.doc2x_model)
             elif method == "mathpix":
                 if pdf_path is None or not pdf_path.is_file():
                     die("--pdf is required for Mathpix conversion")
@@ -683,13 +689,13 @@ def cmd_run(args: argparse.Namespace) -> None:
     cmd_compile(
         argparse.Namespace(
             work=str(work_dir),
-            main="merge_translate_zh",
+            main=CHINESE_MERGED_BASENAME,
             compiler=args.compiler,
             timeout_seconds=args.compile_timeout_seconds,
         )
     )
 
-    pdf = work_dir / "merge_translate_zh.pdf"
+    pdf = work_dir / f"{CHINESE_MERGED_BASENAME}.pdf"
     vision_pack: Path | None = None
     if args.rebuild_mode == "vision-rebuild":
         if source_pdf_for_pack is None or not source_pdf_for_pack.is_file():
@@ -699,7 +705,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             translated_pdf=pdf,
             out_dir=output_dir / "vision_pack",
             pages_spec=args.vision_pages,
-            tex_path=work_dir / "merge_translate_zh.tex",
+            tex_path=work_dir / f"{CHINESE_MERGED_BASENAME}.tex",
         )
         log_path_hint("Vision review pack", vision_pack)
         log_path_hint("Vision review manifest", vision_pack / "manifest.json")
@@ -760,7 +766,7 @@ def build_parser() -> argparse.ArgumentParser:
     glossary_cmd.add_argument("--max-terms", type=int, default=40)
     glossary_cmd.add_argument("--max-candidates", type=int, default=80)
     glossary_cmd.add_argument("--timeout-seconds", type=int, default=120)
-    glossary_cmd.add_argument("--max-retries", type=int, default=4)
+    glossary_cmd.add_argument("--max-retries", type=int, default=8)
     glossary_cmd.set_defaults(func=cmd_glossary)
 
     translate = sub.add_parser("translate", help="translate segments.jsonl with an OpenAI-compatible chat completions API")
@@ -772,9 +778,9 @@ def build_parser() -> argparse.ArgumentParser:
     translate.add_argument("--requirement", default="")
     translate.add_argument("--glossary", help="default: <work>/glossary.json")
     translate.add_argument("--timeout-seconds", type=int, default=120)
-    translate.add_argument("--max-retries", type=int, default=4)
-    translate.add_argument("--workers", type=int, default=4, help="number of concurrent translation requests")
-    translate.add_argument("--retry-untranslated", type=int, default=2, help="retry segments that still look mostly untranslated")
+    translate.add_argument("--max-retries", type=int, default=8)
+    translate.add_argument("--workers", type=int, default=50, help="number of concurrent translation requests")
+    translate.add_argument("--retry-untranslated", type=int, default=4, help="retry segments that still look mostly untranslated")
     translate.add_argument("--limit", type=int, default=0, help="translate at most this many new segments; useful for smoke tests")
     translate.add_argument("--force", action="store_true", help="ignore existing translations and overwrite from the start")
     translate.set_defaults(func=cmd_translate)
@@ -790,8 +796,8 @@ def build_parser() -> argparse.ArgumentParser:
     review_cmd.add_argument("--model", help="translation model name; prefer PDF2ZH_TRANSLATION_MODEL in .env")
     review_cmd.add_argument("--requirement", default="")
     review_cmd.add_argument("--timeout-seconds", type=int, default=120)
-    review_cmd.add_argument("--max-retries", type=int, default=4)
-    review_cmd.add_argument("--workers", type=int, default=4)
+    review_cmd.add_argument("--max-retries", type=int, default=8)
+    review_cmd.add_argument("--workers", type=int, default=50)
     review_cmd.set_defaults(func=cmd_review_consistency)
 
     vision_pack_cmd = sub.add_parser("prepare-vision-pack", help="render source and translated PDF pages for vision-assisted layout rebuilding")
@@ -802,14 +808,14 @@ def build_parser() -> argparse.ArgumentParser:
     vision_pack_cmd.add_argument("--tex", help="optional translated TeX path for later patching")
     vision_pack_cmd.set_defaults(func=cmd_prepare_vision_pack)
 
-    apply = sub.add_parser("apply", help="apply translations JSONL and write merge_translate_zh.tex")
+    apply = sub.add_parser("apply", help=f"apply translations JSONL and write {CHINESE_MERGED_BASENAME}.tex")
     apply.add_argument("--work", required=True)
     apply.add_argument("--translations", required=True)
     apply.set_defaults(func=cmd_apply)
 
-    compile_cmd = sub.add_parser("compile", help="compile merge_translate_zh.tex")
+    compile_cmd = sub.add_parser("compile", help=f"compile {CHINESE_MERGED_BASENAME}.tex")
     compile_cmd.add_argument("--work", required=True)
-    compile_cmd.add_argument("--main", default="merge_translate_zh")
+    compile_cmd.add_argument("--main", default=CHINESE_MERGED_BASENAME)
     compile_cmd.add_argument("--compiler", choices=["lualatex", "xelatex", "pdflatex"])
     compile_cmd.add_argument("--timeout-seconds", type=int, default=180)
     compile_cmd.set_defaults(func=cmd_compile)
@@ -831,11 +837,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--mathpix-app-id")
     run_cmd.add_argument("--mathpix-app-key")
     run_cmd.add_argument("--requirement", default="")
-    run_cmd.add_argument("--workers", type=int, default=4)
+    run_cmd.add_argument("--workers", type=int, default=50)
     run_cmd.add_argument("--glossary-max-terms", type=int, default=40)
     run_cmd.add_argument("--glossary-max-candidates", type=int, default=80)
-    run_cmd.add_argument("--retry-untranslated", type=int, default=2)
-    run_cmd.add_argument("--max-retries", type=int, default=4)
+    run_cmd.add_argument("--retry-untranslated", type=int, default=4)
+    run_cmd.add_argument("--max-retries", type=int, default=8)
     run_cmd.add_argument("--translate-timeout-seconds", type=int, default=120)
     run_cmd.add_argument("--compile-timeout-seconds", type=int, default=300)
     run_cmd.add_argument("--compiler", choices=["lualatex", "xelatex", "pdflatex"])
