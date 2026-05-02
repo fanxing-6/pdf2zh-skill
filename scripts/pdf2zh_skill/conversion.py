@@ -2,6 +2,141 @@ from __future__ import annotations
 
 from .common import *
 
+def arxiv_id_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.netloc not in {"arxiv.org", "www.arxiv.org"}:
+        return None
+    path = parsed.path.strip("/")
+    prefixes = ("abs/", "pdf/", "src/", "e-print/")
+    identifier = None
+    for prefix in prefixes:
+        if path.startswith(prefix):
+            identifier = path[len(prefix) :]
+            break
+    if not identifier:
+        return None
+    if identifier.endswith(".pdf"):
+        identifier = identifier[:-4]
+    identifier = identifier.strip("/")
+    patterns = [
+        r"\d{4}\.\d{4,5}(?:v\d+)?",
+        r"[a-z\-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?",
+    ]
+    if any(re.fullmatch(pattern, identifier) for pattern in patterns):
+        return identifier
+    return None
+
+
+def arxiv_pdf_url(arxiv_id: str) -> str:
+    return f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+
+def arxiv_source_urls(arxiv_id: str) -> list[str]:
+    return [
+        f"https://arxiv.org/src/{arxiv_id}",
+        f"https://arxiv.org/e-print/{arxiv_id}",
+    ]
+
+
+def extract_arxiv_source_archive(archive_path: Path, project: Path) -> None:
+    import gzip
+    import tarfile
+
+    def write_main_tex(data: bytes) -> None:
+        project.mkdir(parents=True, exist_ok=True)
+        (project / "main.tex").write_bytes(data)
+
+    project.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarfile.open(archive_path, "r:*") as tf:
+            tf.extractall(project)
+        return
+    except tarfile.ReadError:
+        pass
+
+    try:
+        with gzip.open(archive_path, "rb") as fh:
+            inflated = fh.read()
+    except OSError:
+        inflated = b""
+
+    if inflated:
+        temp_inflated = archive_path.with_suffix(".inflated")
+        temp_inflated.write_bytes(inflated)
+        try:
+            with tarfile.open(temp_inflated, "r:*") as tf:
+                tf.extractall(project)
+            return
+        except tarfile.ReadError:
+            pass
+        finally:
+            temp_inflated.unlink(missing_ok=True)
+        if b"\\documentclass" in inflated or b"\\begin{document}" in inflated:
+            write_main_tex(inflated)
+            return
+
+    raw = archive_path.read_bytes()
+    if b"\\documentclass" in raw or b"\\begin{document}" in raw:
+        write_main_tex(raw)
+        return
+
+    die(f"arXiv source archive could not be extracted: {archive_path}")
+
+
+def download_arxiv_source_project(url: str, out: Path) -> tuple[Path, Path] | None:
+    import requests
+
+    arxiv_id = arxiv_id_from_url(url)
+    if not arxiv_id:
+        return None
+
+    out.mkdir(parents=True, exist_ok=True)
+    archive = out / f"{slugify(arxiv_id)}_source"
+    project = out / "project"
+    if project.exists():
+        shutil.rmtree(project)
+
+    source_downloaded = False
+    last_error = None
+    for source_url in arxiv_source_urls(arxiv_id):
+        log(f"arXiv: probing source package {safe_url_label(source_url)}")
+        try:
+            response = requests.get(
+                source_url,
+                headers={"User-Agent": "pdf2zh-skill"},
+                timeout=(15, 180),
+                stream=True,
+                allow_redirects=True,
+            )
+            if response.status_code == 404:
+                last_error = "404 not found"
+                continue
+            response.raise_for_status()
+            with archive.open("wb") as fh:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+            source_downloaded = True
+            break
+        except Exception as exc:
+            last_error = repr(exc)
+            log(f"arXiv: source download failed for {safe_url_label(source_url)}: {last_error}")
+            continue
+
+    if not source_downloaded:
+        log(f"arXiv: no usable source package found for {arxiv_id}: {last_error}")
+        return None
+
+    extract_arxiv_source_archive(archive, project)
+    if not any(project.rglob("*.tex")):
+        die(f"arXiv source package for {arxiv_id} does not contain any .tex files")
+
+    pdf_path = out / f"{slugify(arxiv_id)}.pdf"
+    download_url(arxiv_pdf_url(arxiv_id), pdf_path)
+    log(f"arXiv: using source package for {arxiv_id}")
+    return project, pdf_path
+
+
 def convert_doc2x(pdf: Path, out: Path, api_key: str | None, model: str) -> Path:
     api_key = api_key or os.environ.get("DOC2X_API_KEY")
     if not api_key:

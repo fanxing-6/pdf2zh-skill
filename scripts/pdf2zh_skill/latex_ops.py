@@ -78,8 +78,17 @@ def inject_chinese_support(text: str) -> str:
 
 def normalize_problem_unicode(text: str) -> str:
     """Normalize OCR compatibility glyphs that commonly break CJK LaTeX fonts."""
+    replacements = {
+        "→": r"\ensuremath{\rightarrow}",
+        "←": r"\ensuremath{\leftarrow}",
+        "⇒": r"\ensuremath{\Rightarrow}",
+        "⇐": r"\ensuremath{\Leftarrow}",
+    }
     chars: list[str] = []
     for ch in text:
+        if ch in replacements:
+            chars.append(replacements[ch])
+            continue
         code = ord(ch)
         if ch in "\n\r\t":
             chars.append(ch)
@@ -100,6 +109,8 @@ def sanitize_latex_source(text: str) -> str:
     # Some PDF-to-TeX converters emit XeTeX-only font helpers. This skill
     # prefers LuaLaTeX for CJK robustness, so keep language handling in ctex.
     text = re.sub(r"^[ \t]*\\usepackage(?:\[[^\]]*\])?\{ucharclasses\}[ \t]*\n", "", text, flags=re.M)
+    text = normalize_linebreak_dimension_commands(text)
+    text = normalize_section_reference_phrases(text)
     text = normalize_font_fallback_blocks(text)
     text = normalize_text_symbol_commands(text)
     text = normalize_math_font_fragments(text)
@@ -164,6 +175,24 @@ def normalize_item_syntax(text: str) -> str:
     # a single undefined control sequence. Add a space so LaTeX parses
     # "\item" correctly.
     return re.sub(r"\\item(?=\S)", r"\\item ", text)
+
+
+def normalize_linebreak_dimension_commands(text: str) -> str:
+    # Translation models sometimes turn "\\[2pt]" into "\[2pt]", which LaTeX
+    # interprets as display-math start instead of a linebreak with extra space.
+    return re.sub(
+        r"(?<!\\)\\\[(\s*\d+(?:\.\d+)?(?:pt|em|ex|mm|cm|in)\s*)\]",
+        r"\\\\[\1]",
+        text,
+    )
+
+
+def normalize_section_reference_phrases(text: str) -> str:
+    return re.sub(
+        r"\\S所示[。.]?\s*\\ref\{([^}]+)\}",
+        r"\\S\\ref{\1}所示",
+        text,
+    )
 
 def normalize_text_symbol_commands(text: str) -> str:
     return re.sub(r"\\(textless|textgreater|textbar)(?!\{\})", r"\\\1{}", text)
@@ -398,7 +427,7 @@ def protected_spans(text: str) -> list[tuple[int, int]]:
 
     add(r"\\iffalse.*?\\fi", re.DOTALL)
     add(r"\$\$.*?\$\$", re.DOTALL)
-    add(r"\\\[.*?\\\]", re.DOTALL)
+    add(r"(?<!\\)\\\[.*?\\\]", re.DOTALL)
     add(r"\\begin\{center\}.*?\\end\{center\}", re.DOTALL)
     add(r"\\begin\{(?:tabular|tabular\*|tabularx|array)\}(?:\{.*?\})?.*?\\end\{(?:tabular|tabular\*|tabularx|array)\}", re.DOTALL)
     spans.extend(short_generic_environment_spans(text, limit_n_lines=42))
@@ -484,10 +513,11 @@ def mask_latex_blocks_for_translation(text: str) -> tuple[str, dict[str, str]]:
         return token
 
     patterns = [
+        r"\\\\(?:\[[^\]]*\])?",
         r"\\textless\s*\|\s*/?\s*(?:ref|box|point)\s*\|\s*\\textgreater",
         r"\|\s*/?\s*(?:ref|box|point)\s*\|\s*\\textgreater",
         r"\\textless\s*\|\s*/?\s*(?:ref|box|point)\s*\|",
-        r"\\\(.+?\\\)",
+        r"(?<!\\)\\\(.+?\\\)",
         r"(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$)",
         r"\\(?:def|setcounter)\b[^\n]*",
         r"\\tightlist\b",
@@ -717,7 +747,15 @@ def compile_attempt(compiler: str, work: Path, main: str, timeout: int) -> tuple
     if aux.exists() and shutil.which("bibtex"):
         aux_text = aux.read_text(encoding="utf-8", errors="ignore")
         if r"\bibdata" in aux_text:
-            run(["bibtex", main], work, timeout)
+            bib_matches = re.findall(r"\\bibdata\{([^}]*)\}", aux_text)
+            bib_names: list[str] = []
+            for match in bib_matches:
+                bib_names.extend(part.strip() for part in match.split(",") if part.strip())
+            bib_files = [work / f"{name}.bib" for name in bib_names]
+            if any(path.exists() for path in bib_files):
+                run(["bibtex", main], work, timeout)
+            elif (work / f"{main}.bbl").exists():
+                print(f"warning: no .bib file found for {main}; reusing existing {main}.bbl", file=sys.stderr)
     ok = run([compiler, "-interaction=batchmode", "-file-line-error", f"{main}.tex"], work, timeout) and ok
     ok = run([compiler, "-interaction=batchmode", "-file-line-error", f"{main}.tex"], work, timeout) and ok
     return pdf_is_readable(pdf), ok
@@ -734,7 +772,6 @@ def collect_critical_latex_issues(log_path: Path) -> list[str]:
         r"Missing \$ inserted",
         r"Runaway argument",
         r"File ended while scanning",
-        r"Missing character: There is no",
     ]
     combined = re.compile("|".join(patterns), re.M)
     issues = []

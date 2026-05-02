@@ -31,6 +31,11 @@ def cmd_convert(args: argparse.Namespace) -> None:
     out = Path(args.out).resolve()
     pdf = Path(args.pdf).resolve() if args.pdf else None
     if args.url and pdf is None:
+        arxiv_project = download_arxiv_source_project(args.url, out / "arxiv_source")
+        if arxiv_project is not None:
+            project, _pdf = arxiv_project
+            print(project)
+            return
         pdf = download_remote_pdf(args.url, out / "remote_source")
     if pdf is None or not pdf.is_file():
         die("--pdf is required and must point to an existing file, or provide --url")
@@ -66,6 +71,10 @@ def cmd_prepare(args: argparse.Namespace) -> None:
             shutil.copy2(item, target)
 
     main = find_main_tex(source)
+    source_bbl = main.with_suffix(".bbl")
+    if source_bbl.is_file():
+        shutil.copy2(source_bbl, work / f"{ENGLISH_MERGED_BASENAME}.bbl")
+        shutil.copy2(source_bbl, work / f"{CHINESE_MERGED_BASENAME}.bbl")
     merged = sanitize_latex_source(inject_chinese_support(merge_tex(source, main)))
     (work / f"{ENGLISH_MERGED_BASENAME}.tex").write_text(merged, encoding="utf-8")
     nodes = split_nodes(merged)
@@ -595,6 +604,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else default_task_output_dir(source_hint)
     output_dir.mkdir(parents=True, exist_ok=True)
     convert_dir = output_dir / "convert"
+    arxiv_convert_dir = convert_dir / "arxiv_source"
     work_dir = output_dir / "zh"
     source_pdf_for_pack: Path | None = None
     log_path_hint("Skill home", skill_home_dir())
@@ -612,28 +622,44 @@ def cmd_run(args: argparse.Namespace) -> None:
     else:
         method = choose_conversion_method(args.method, bool(args.url))
         source = args.url or str(Path(args.pdf).resolve())
-        if maybe_existing_project(convert_dir / "project") and not args.force_convert:
+        arxiv_id = arxiv_id_from_url(args.url) if args.url else None
+        if arxiv_id and maybe_existing_project(arxiv_convert_dir / "project") and not args.force_convert:
+            project = arxiv_convert_dir / "project"
+            pdf_candidates = sorted(arxiv_convert_dir.glob("*.pdf"))
+            source_pdf_for_pack = pdf_candidates[0] if pdf_candidates else None
+            method = "arxiv-src"
+            log(f"Run: reusing arXiv source project {project}")
+        elif maybe_existing_project(convert_dir / "project") and not args.force_convert:
             project = convert_dir / "project"
             log(f"Run: reusing converted project {project}")
         else:
             if convert_dir.exists() and args.force_convert:
                 shutil.rmtree(convert_dir)
-            pdf_path = Path(args.pdf).resolve() if args.pdf else None
-            if args.url and pdf_path is None:
+            pdf_path: Path | None = None
+            if args.url:
+                arxiv_project = download_arxiv_source_project(args.url, arxiv_convert_dir)
+                if arxiv_project is not None:
+                    project, source_pdf_for_pack = arxiv_project
+                    method = "arxiv-src"
+                    source = args.url
+            if method != "arxiv-src" and pdf_path is None:
+                pdf_path = Path(args.pdf).resolve() if args.pdf else None
+            if method != "arxiv-src" and args.url and pdf_path is None:
                 pdf_path = download_remote_pdf(args.url, convert_dir / "remote_source")
-            source_pdf_for_pack = pdf_path.resolve() if pdf_path else None
-            if method == "doc2x":
-                if pdf_path is None or not pdf_path.is_file():
-                    die("--pdf is required for DOC2X conversion")
-                project = convert_doc2x(pdf_path, convert_dir, args.doc2x_api_key, args.doc2x_model)
-            elif method == "mathpix":
-                if pdf_path is None or not pdf_path.is_file():
-                    die("--pdf is required for Mathpix conversion")
-                project = convert_mathpix(pdf_path, convert_dir, args.mathpix_app_id, args.mathpix_app_key)
-            else:
-                if pdf_path is None or not pdf_path.is_file():
-                    die("--pdf is required for text fallback conversion")
-                project = convert_text_fallback(pdf_path, convert_dir)
+            if method != "arxiv-src":
+                source_pdf_for_pack = pdf_path.resolve() if pdf_path else None
+                if method == "doc2x":
+                    if pdf_path is None or not pdf_path.is_file():
+                        die("--pdf is required for DOC2X conversion")
+                    project = convert_doc2x(pdf_path, convert_dir, args.doc2x_api_key, args.doc2x_model)
+                elif method == "mathpix":
+                    if pdf_path is None or not pdf_path.is_file():
+                        die("--pdf is required for Mathpix conversion")
+                    project = convert_mathpix(pdf_path, convert_dir, args.mathpix_app_id, args.mathpix_app_key)
+                else:
+                    if pdf_path is None or not pdf_path.is_file():
+                        die("--pdf is required for text fallback conversion")
+                    project = convert_text_fallback(pdf_path, convert_dir)
 
     if args.force_prepare and work_dir.exists():
         shutil.rmtree(work_dir)
