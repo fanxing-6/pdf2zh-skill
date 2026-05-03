@@ -112,6 +112,7 @@ def sanitize_latex_source(text: str) -> str:
     text = normalize_linebreak_dimension_commands(text)
     text = normalize_section_reference_phrases(text)
     text = strip_markdown_emphasis_artifacts(text)
+    text = normalize_reference_command_arguments(text)
     text = normalize_font_fallback_blocks(text)
     text = normalize_text_symbol_commands(text)
     text = normalize_math_font_fragments(text)
@@ -121,6 +122,7 @@ def sanitize_latex_source(text: str) -> str:
     text = normalize_pandoc_longtable_groups(text)
     text = wrap_pandoc_figure_blocks(text)
     text = escape_unescaped_text_underscores(text)
+    text = normalize_reference_command_arguments(text)
     return text
 
 def normalize_frontmatter_content(text: str) -> str:
@@ -204,6 +206,30 @@ def strip_markdown_emphasis_artifacts(text: str) -> str:
     text = re.sub(r"(?<!\\)__([^\n_][^\n]*?[^\n_])(?<!\\)__", r"\1", text)
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)
     return text
+
+
+REF_LIKE_COMMANDS = (
+    "Cref|cref|Crefrange|crefrange|autoref|Autoref|ref|eqref|pageref|nameref|"
+    "cite|cites|citep|citet|citealp|citealt|citeauthor|citeyear|label"
+)
+
+
+def ref_like_command_pattern() -> str:
+    return rf"\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*" + r"\{[^{}]*\}"
+
+
+def normalize_reference_command_arguments(text: str) -> str:
+    # Label, reference and citation keys are LaTeX identifiers. Underscores are
+    # valid there and must not be escaped as text underscores.
+    pattern = re.compile(
+        rf"(\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*)"
+        r"\{([^{}]*)\}"
+    )
+
+    def repl(match: re.Match) -> str:
+        return match.group(1) + "{" + match.group(2).replace(r"\_", "_") + "}"
+
+    return pattern.sub(repl, text)
 
 def normalize_text_symbol_commands(text: str) -> str:
     return re.sub(r"\\(textless|textgreater|textbar)(?!\{\})", r"\\\1{}", text)
@@ -444,7 +470,8 @@ def protected_spans(text: str) -> list[tuple[int, int]]:
     spans.extend(short_generic_environment_spans(text, limit_n_lines=42))
     add(r"\\begin\{(?:equation|equation\*|align|align\*|multline|multline\*|gather|gather\*)\}.*?\\end\{[^}]+\}", re.DOTALL)
     add(r"\\begin\{(?:figure|figure\*|table|table\*|algorithm|lstlisting|thebibliography)\}.*?\\end\{[^}]+\}", re.DOTALL)
-    add(r"\\(?:cite|citep|citet|ref|eqref|label|url|href|includegraphics|bibliography|bibliographystyle)\*?(?:\[[^\]]*\])?\{[^}]*\}")
+    add(ref_like_command_pattern())
+    add(r"\\(?:url|href|includegraphics|bibliography|bibliographystyle)\*?(?:\[[^\]]*\])?\{[^}]*\}")
     add(r"\\(?:begin|end)\{[^}]+\}")
     add(r"\\(?:newpage|clearpage|appendix|tableofcontents)\b")
 
@@ -535,7 +562,8 @@ def mask_latex_blocks_for_translation(text: str) -> tuple[str, dict[str, str]]:
         r"\\item\b",
         r"\\(?:textless|textbar|textgreater|ldots|par|sloppy|maketitle|noindent)\b(?:\{\})?",
         r"\\(?:begin|end)\{[^}]+\}",
-        r"\\(?:label|ref|eqref|cite|citep|citet|url|href|includegraphics)\*?(?:\[[^\]]*\])?\{[^}]*\}",
+        ref_like_command_pattern(),
+        r"\\(?:url|href|includegraphics)\*?(?:\[[^\]]*\])?\{[^}]*\}",
     ]
     masked = text
     for pattern in patterns:
@@ -659,6 +687,7 @@ def coalesce_preserve(nodes: list[Node]) -> list[Node]:
 
 def fix_translation(translated: str, original: str) -> str:
     translated = strip_markdown_emphasis_artifacts(translated)
+    translated = normalize_reference_command_arguments(translated)
     translated = re.sub(r"(?<!\\)%", r"\\%", translated)
     translated = re.sub(r"\\([a-zA-Z]{2,20})\s+\{", r"\\\1{", translated)
     translated = re.sub(r"\\([a-zA-Z]{2,20})\{([^}]*)\}", normalize_command_argument_punctuation, translated)
@@ -668,8 +697,7 @@ def fix_translation(translated: str, original: str) -> str:
         return original
     if brace_balance(original) != brace_balance(translated):
         translated = join_most_matching_braces(translated, original)
-    if original.count(r"\_") > translated.count(r"\_"):
-        translated = re.sub(r"(?<!\\)_", r"\\_", translated)
+    translated = normalize_reference_command_arguments(translated)
     return translated
 
 def normalize_command_argument_punctuation(match: re.Match) -> str:

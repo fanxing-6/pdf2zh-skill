@@ -119,6 +119,7 @@ def cmd_prompts(args: argparse.Namespace) -> None:
                 "prompt": (
                     "Translate the following English academic LaTeX segment into Chinese. "
                     "Do not modify LaTeX commands, citation keys, labels, equations, begin/end environments, file names, or braces. "
+                    "Keep reference and citation commands byte-for-byte unchanged, including \\Cref{...}, \\cref{...}, \\ref{...}, \\eqref{...}, \\pageref{...}, \\nameref{...}, \\cite{...}, \\citep{...}, \\citet{...}; never escape underscores inside their braces. "
                     "Do not use Markdown syntax such as **bold**, __bold__, `code`, headings, or bullet lists. "
                     "Return only the translated segment."
                     f"{glossary}\n\n{node['text']}"

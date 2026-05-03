@@ -318,6 +318,7 @@ def call_translation_api(
                 f"{style_rule}"
                 f"{paper_glossary}"
                 "Do not modify any latex command such as \\section, \\cite, \\begin, \\item and equations. "
+                "Keep reference and citation commands byte-for-byte unchanged, including \\Cref{...}, \\cref{...}, \\ref{...}, \\eqref{...}, \\pageref{...}, \\nameref{...}, \\cite{...}, \\citep{...}, \\citet{...}; never translate keys and never escape underscores inside their braces. "
                 "Do not modify placeholders like __LATEX_BLOCK_0000__; keep them byte-for-byte unchanged. "
                 "If a paper-level glossary specifies a preferred translation for a term, use that translation consistently. "
                 "Do not use Markdown syntax such as **bold**, __bold__, `code`, headings, or bullet lists. "
@@ -370,7 +371,7 @@ def translate_with_retries(
             model=model,
             requirement=(
                 requirement.strip()
-                + "\nThe previous attempt left too much English. Translate the prose into idiomatic Chinese while preserving LaTeX exactly."
+                + "\nThe previous attempt left too much English. Translate the prose into idiomatic Chinese while preserving LaTeX exactly, especially reference and citation command keys."
             ).strip(),
             glossary_text=glossary_text,
             timeout=timeout,
@@ -413,6 +414,7 @@ def revise_translation_for_consistency(
             "content": (
                 "Revise the current Chinese translation of one LaTeX segment so it uses the preferred paper-level terminology consistently. "
                 "Keep all LaTeX commands, environments, labels, equations, and placeholders unchanged. "
+                "Keep reference and citation commands byte-for-byte unchanged, including \\Cref{...}, \\cref{...}, \\ref{...}, \\eqref{...}, \\pageref{...}, \\nameref{...}, \\cite{...}, \\citep{...}, \\citet{...}; never translate keys and never escape underscores inside their braces. "
                 "Do not use Markdown syntax such as **bold**, __bold__, `code`, headings, or bullet lists. "
                 "Do not add explanations. Return only the revised translated text.\n"
                 f"{requirement_block}"
