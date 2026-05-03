@@ -111,6 +111,7 @@ def sanitize_latex_source(text: str) -> str:
     text = re.sub(r"^[ \t]*\\usepackage(?:\[[^\]]*\])?\{ucharclasses\}[ \t]*\n", "", text, flags=re.M)
     text = normalize_linebreak_dimension_commands(text)
     text = normalize_section_reference_phrases(text)
+    text = strip_markdown_emphasis_artifacts(text)
     text = normalize_font_fallback_blocks(text)
     text = normalize_text_symbol_commands(text)
     text = normalize_math_font_fragments(text)
@@ -193,6 +194,16 @@ def normalize_section_reference_phrases(text: str) -> str:
         r"\\S\\ref{\1}所示",
         text,
     )
+
+
+def strip_markdown_emphasis_artifacts(text: str) -> str:
+    # Chat models sometimes emit Markdown emphasis inside LaTeX text. In TeX
+    # those markers are printed literally, so remove only balanced delimiters
+    # and keep the translated prose.
+    text = re.sub(r"(?<!\\)\*\*([^\n*][^\n]*?[^\n*])(?<!\\)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\\)__([^\n_][^\n]*?[^\n_])(?<!\\)__", r"\1", text)
+    text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)
+    return text
 
 def normalize_text_symbol_commands(text: str) -> str:
     return re.sub(r"\\(textless|textgreater|textbar)(?!\{\})", r"\\\1{}", text)
@@ -647,6 +658,7 @@ def coalesce_preserve(nodes: list[Node]) -> list[Node]:
     return out
 
 def fix_translation(translated: str, original: str) -> str:
+    translated = strip_markdown_emphasis_artifacts(translated)
     translated = re.sub(r"(?<!\\)%", r"\\%", translated)
     translated = re.sub(r"\\([a-zA-Z]{2,20})\s+\{", r"\\\1{", translated)
     translated = re.sub(r"\\([a-zA-Z]{2,20})\{([^}]*)\}", normalize_command_argument_punctuation, translated)

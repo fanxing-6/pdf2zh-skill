@@ -160,7 +160,7 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
 
 ## 翻译与修复规则
 
-翻译固定使用用户提供的兼容 `OpenAI Chat Completions` 的 API。提示词约束是：只翻译论文自然语言，不改 `\section`、`\cite`、`\begin`、`\item`、数学公式、标签、文件名和参考文献键。
+翻译固定使用用户提供的兼容 `OpenAI Chat Completions` 的 API。提示词约束是：只翻译论文自然语言，不改 `\section`、`\cite`、`\begin`、`\item`、数学公式、标签、文件名和参考文献键，并且输出必须是可回填的 LaTeX 文本，不能夹带 Markdown 标记。
 
 脚本会在应用翻译和编译前做几层稳定性修复，包括：
 
@@ -168,6 +168,7 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
 - 修复常见 OCR / LaTeX 兼容字符问题
 - 修复未转义文本下划线
 - 修复翻译后 `\item` 与正文粘连导致的未定义命令
+- 清理模型误输出的 Markdown 加粗、下划线加粗和单反引号标记
 - 优先用 `lualatex` 编译中文输出
 
 `translate` 默认以 `50` 并发运行，并默认启用更积极的失败重试。若目标接口存在严格速率限制，再按需下调 `--workers` 或 `--max-retries`。

@@ -309,7 +309,7 @@ def call_translation_api(
     messages = [
         {
             "role": "system",
-            "content": "You are a professional translator.",
+            "content": "You are a professional academic LaTeX translator. Return valid LaTeX text, not Markdown.",
         },
         {
             "role": "user",
@@ -320,6 +320,8 @@ def call_translation_api(
                 "Do not modify any latex command such as \\section, \\cite, \\begin, \\item and equations. "
                 "Do not modify placeholders like __LATEX_BLOCK_0000__; keep them byte-for-byte unchanged. "
                 "If a paper-level glossary specifies a preferred translation for a term, use that translation consistently. "
+                "Do not use Markdown syntax such as **bold**, __bold__, `code`, headings, or bullet lists. "
+                "If emphasis is already present in LaTeX, preserve the original LaTeX command instead of creating Markdown. "
                 "Answer me only with the translated text:"
                 f"\n\n{masked_text}"
             ),
@@ -404,13 +406,14 @@ def revise_translation_for_consistency(
     messages = [
         {
             "role": "system",
-            "content": "You are revising a Chinese academic translation for terminology consistency.",
+            "content": "You are revising a Chinese academic LaTeX translation for terminology consistency. Return valid LaTeX text, not Markdown.",
         },
         {
             "role": "user",
             "content": (
                 "Revise the current Chinese translation of one LaTeX segment so it uses the preferred paper-level terminology consistently. "
                 "Keep all LaTeX commands, environments, labels, equations, and placeholders unchanged. "
+                "Do not use Markdown syntax such as **bold**, __bold__, `code`, headings, or bullet lists. "
                 "Do not add explanations. Return only the revised translated text.\n"
                 f"{requirement_block}"
                 f"\nRequired terminology for this segment:\n{glossary_block}\n"
