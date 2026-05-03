@@ -1,5 +1,13 @@
 # pdf2zh-skill
 
+`Thinking_with_Visual_Primitives.pdf`:
+
+![Thinking_with_Visual_Primitives before/after](docs/images/thinking_with_visual_primitives_before_after.png)
+
+`arXiv 2604.13016`:
+
+![arXiv 2604.13016 before/after](docs/images/arxiv_2604_13016_before_after.png)
+
 Convert academic PDF papers into Chinese PDF outputs while preserving LaTeX structure as much as possible.
 
 ## What it does
@@ -50,17 +58,17 @@ python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-m
 - `rebuild`: automatic translation and TeX-level rebuilding
 - `vision-rebuild`: generate a visual compare pack and iteratively patch layout by inspecting rendered pages
 
-## Example
+## Examples
 
-The repository includes a real before/after example for `Thinking_with_Visual_Primitives.pdf`.
-The image below shows the first page of the original English PDF on the left and the translated Chinese PDF on the right.
-
-![Thinking_with_Visual_Primitives before/after](docs/images/thinking_with_visual_primitives_before_after.png)
+The first example above comes from the DOC2X route.
+The second comes from the source-TeX route, where the skill probes arXiv source first and skips DOC2X when the paper source is available.
 
 Raw images are also included:
 
 - `docs/images/thinking_with_visual_primitives_before.png`
 - `docs/images/thinking_with_visual_primitives_after.png`
+- `docs/images/arxiv_2604_13016_before.png`
+- `docs/images/arxiv_2604_13016_after.png`
 
 ## Files
 
