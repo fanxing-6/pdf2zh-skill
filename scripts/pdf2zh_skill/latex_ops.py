@@ -70,10 +70,6 @@ def inject_chinese_support(text: str) -> str:
         text = re.sub(r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)", r"\1\\usepackage[UTF8]{ctex}\n", text, count=1)
     if r"\usepackage{url}" not in text and r"\url{" in text:
         text = re.sub(r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)", r"\1\\usepackage{url}\n", text, count=1)
-    if r"\begin{abstract}" not in text and r"\abstract{" not in text:
-        marker = r"\maketitle"
-        if marker in text:
-            text = text.replace(marker, marker + "\n\\begin{abstract}\nAbstract unavailable.\n\\end{abstract}", 1)
     return text
 
 def normalize_problem_unicode(text: str) -> str:
@@ -109,8 +105,10 @@ def sanitize_latex_source(text: str) -> str:
     # Some PDF-to-TeX converters emit XeTeX-only font helpers. This skill
     # prefers LuaLaTeX for CJK robustness, so keep language handling in ctex.
     text = re.sub(r"^[ \t]*\\usepackage(?:\[[^\]]*\])?\{ucharclasses\}[ \t]*\n", "", text, flags=re.M)
+    text = normalize_xcolor_package_loads(text)
     text = normalize_linebreak_dimension_commands(text)
     text = normalize_section_reference_phrases(text)
+    text = normalize_double_escaped_reference_commands(text)
     text = drop_visual_demo_ocr_blocks(text)
     text = normalize_reference_heading(text)
     text = normalize_caption_prefixes(text)
@@ -199,6 +197,44 @@ def normalize_section_reference_phrases(text: str) -> str:
         r"\\S\\ref{\1}所示",
         text,
     )
+
+
+def normalize_double_escaped_reference_commands(text: str) -> str:
+    commands = r"(?:Cref|cref|ref|eqref|pageref|nameref|cite|citep|citet|citealp|citealt|citeauthor|citeyear)"
+    return re.sub(rf"\\\\({commands})\{{", r"\\\1{", text)
+
+
+def normalize_xcolor_package_loads(text: str) -> str:
+    pattern = re.compile(r"^[ \t]*\\usepackage(?:\[([^\]]*)\])?\{xcolor\}[ \t]*\n?", re.M)
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return text
+
+    options: list[str] = []
+    seen: set[str] = set()
+    for match in matches:
+        raw_options = match.group(1) or ""
+        for option in (part.strip() for part in raw_options.split(",")):
+            if option and option not in seen:
+                options.append(option)
+                seen.add(option)
+    load = "\\usepackage"
+    if options:
+        load += "[" + ",".join(options) + "]"
+    load += "{xcolor}\n"
+
+    pieces: list[str] = []
+    cursor = 0
+    for match in matches:
+        pieces.append(text[cursor : match.start()])
+        cursor = match.end()
+    pieces.append(text[cursor:])
+    text = "".join(pieces)
+
+    docclass = re.search(r"\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*", text)
+    if not docclass:
+        return load + text
+    return text[: docclass.end()] + "\n" + load + text[docclass.end() :]
 
 
 def strip_markdown_emphasis_artifacts(text: str) -> str:

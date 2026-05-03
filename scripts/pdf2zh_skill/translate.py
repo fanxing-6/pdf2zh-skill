@@ -8,6 +8,19 @@ TRANSLATION_BASE_URL_ENV = "PDF2ZH_TRANSLATION_BASE_URL"
 TRANSLATION_MODEL_ENV = "PDF2ZH_TRANSLATION_MODEL"
 
 
+def translation_config_help(missing: list[str]) -> str:
+    return (
+        "OpenAI-compatible translation API is not configured; missing "
+        + ", ".join(missing)
+        + ". Put these values in .env or pass the matching CLI flags:\n"
+        "  PDF2ZH_TRANSLATION_API_KEY=...\n"
+        "  PDF2ZH_TRANSLATION_BASE_URL=...  # OpenAI Chat Completions compatible base URL\n"
+        "  PDF2ZH_TRANSLATION_MODEL=...\n"
+        "CLI flags: --translation-api-key/--translation-base-url/--translation-model for run, "
+        "or --api-key/--base-url/--model for translate/build-glossary/review-consistency."
+    )
+
+
 def resolve_translation_settings(
     *,
     api_key: str | None = None,
@@ -25,11 +38,7 @@ def resolve_translation_settings(
     if not model:
         missing.append(TRANSLATION_MODEL_ENV)
     if missing:
-        die(
-            "translation API is not configured; missing "
-            + ", ".join(missing)
-            + ". Put them in .env or pass --api-key/--base-url/--model."
-        )
+        die(translation_config_help(missing))
     return api_key, base_url, model
 
 

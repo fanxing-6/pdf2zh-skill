@@ -140,7 +140,11 @@ def download_arxiv_source_project(url: str, out: Path) -> tuple[Path, Path] | No
 def convert_doc2x(pdf: Path, out: Path, api_key: str | None, model: str) -> Path:
     api_key = api_key or os.environ.get("DOC2X_API_KEY")
     if not api_key:
-        die("DOC2X_API_KEY is required for --method doc2x")
+        die(
+            "DOC2X API key is not configured; missing DOC2X_API_KEY. "
+            "Put DOC2X_API_KEY=... in .env or pass --doc2x-api-key to run "
+            "(--api-key for the convert subcommand)."
+        )
     headers = {"Authorization": f"Bearer {api_key}"}
     staged_pdf, temp_dir = stage_upload_source(pdf)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+import hashlib
 import html
 import json
 import os
@@ -138,13 +139,7 @@ def skill_tmp_dir() -> Path:
     if override:
         path = Path(override).expanduser()
     else:
-        base = (
-            os.environ.get("TMPDIR")
-            or os.environ.get("TEMP")
-            or os.environ.get("TMP")
-            or "/tmp"
-        )
-        path = Path(base).expanduser() / "pdf2zh-skill"
+        path = Path(tempfile.gettempdir()).expanduser() / "pdf2zh-skill"
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
 
@@ -152,10 +147,20 @@ def slugify(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
     return slug or "task"
 
+def source_hint_slug(source_hint: str) -> str:
+    parsed = urlparse(source_hint)
+    if parsed.scheme and parsed.netloc:
+        label = parsed.path.strip("/") or parsed.netloc
+        if label.lower().endswith(".pdf"):
+            label = label[:-4]
+        return slugify(label.replace("/", "-"))
+    return slugify(Path(source_hint).stem or source_hint)
+
 def default_task_output_dir(source_hint: str) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    name = slugify(Path(source_hint).stem or source_hint)
-    return (skill_tmp_dir() / f"{stamp}-{name}").resolve()
+    name = source_hint_slug(source_hint)
+    digest = hashlib.sha1(f"{source_hint}|{time.time_ns()}|{os.getpid()}".encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return (skill_tmp_dir() / f"{stamp}-{name}-{digest}").resolve()
 
 def is_wsl() -> bool:
     if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
@@ -170,6 +175,23 @@ def windows_visible_path(path: Path) -> str | None:
         resolved = path.resolve()
     except Exception:
         resolved = path
+    if is_wsl():
+        try:
+            completed = subprocess.run(
+                ["wslpath", "-w", str(resolved)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+            converted = completed.stdout.strip()
+            if converted:
+                return converted
+        except Exception:
+            distro = os.environ.get("WSL_DISTRO_NAME")
+            if distro:
+                return "\\\\wsl.localhost\\" + distro + "\\" + str(resolved).lstrip("/").replace("/", "\\")
     parts = resolved.parts
     if len(parts) >= 4 and parts[0] == "/" and parts[1] == "mnt" and len(parts[2]) == 1:
         drive = parts[2].upper() + ":"

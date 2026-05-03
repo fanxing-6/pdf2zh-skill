@@ -15,11 +15,65 @@ ENGLISH_GLOSSARY_CANDIDATES_NAME = "glossary_candidates_English.json"
 CHINESE_TRANSLATIONS_NAME = "translations_中文.jsonl"
 CHINESE_REVIEWED_TRANSLATIONS_NAME = "translations_reviewed_中文.jsonl"
 CHINESE_CONSISTENCY_REPORT_NAME = "consistency_report_中文.json"
+CHINESE_QUALITY_REPORT_JSON_NAME = "quality_report_中文.json"
+CHINESE_QUALITY_REPORT_MD_NAME = "quality_report_中文.md"
 
 
 def safe_output_artifact_base(name: str) -> str:
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', "_", name).strip().rstrip(".")
+    cleaned = re.sub(r"\s+", " ", name)
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', "_", cleaned).strip().rstrip(".")
+    if len(cleaned) > 120:
+        cleaned = cleaned[:120].rstrip(" ._-")
     return cleaned or "output"
+
+
+def latex_to_plain_filename(value: str) -> str:
+    text = value.replace("\\\\", " ")
+    for _ in range(4):
+        text = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?\{([^{}]*)\}", r"\1", text)
+    text = re.sub(r"\$([^$]*)\$", r"\1", text)
+    text = re.sub(r"\\[A-Za-z]+\*?", " ", text)
+    text = re.sub(r"[{}$]", " ", text)
+    return compact_whitespace(text)
+
+
+def first_latex_command_argument(text: str, command: str) -> str | None:
+    pattern = re.compile(rf"\\{re.escape(command)}\s*(?:\[[^\]]*\])?\{{", re.S)
+    match = pattern.search(text)
+    if not match:
+        return None
+    start = match.end()
+    depth = 1
+    index = start
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index]
+        index += 1
+    return None
+
+
+def title_from_project(project: Path) -> str | None:
+    try:
+        main = find_main_tex(project)
+        merged = merge_tex(project, main)
+    except Exception:
+        tex_files = sorted(project.rglob("*.tex"))
+        if not tex_files:
+            return None
+        merged = tex_files[0].read_text(encoding="utf-8", errors="ignore")
+    raw_title = first_latex_command_argument(merged, "title")
+    if not raw_title:
+        return None
+    title = latex_to_plain_filename(raw_title)
+    return title or None
 
 
 def output_artifact_base_for_run(
@@ -28,6 +82,13 @@ def output_artifact_base_for_run(
     project: Path,
     source_pdf: Path | None = None,
 ) -> str:
+    if re.match(r"^https?://", source) and arxiv_id_from_url(source):
+        title = title_from_project(project)
+        if title:
+            return safe_output_artifact_base(title)
+        arxiv_id = arxiv_id_from_url(source)
+        if arxiv_id:
+            return safe_output_artifact_base(arxiv_id)
     if source_pdf is not None and source_pdf.is_file():
         return safe_output_artifact_base(source_pdf.stem)
     if re.match(r"^https?://", source):
@@ -574,12 +635,72 @@ def cmd_compile(args: argparse.Namespace) -> None:
         print(log.read_text(encoding="utf-8", errors="replace")[-8000:], file=sys.stderr)
     die("LaTeX compilation failed")
 
-def choose_conversion_method(requested: str, has_url: bool) -> str:
+DOC2X_API_KEY_ENV = "DOC2X_API_KEY"
+
+
+def doc2x_config_help() -> str:
+    return (
+        "DOC2X API key is not configured; missing DOC2X_API_KEY. "
+        "Put DOC2X_API_KEY=... in .env or pass --doc2x-api-key to run "
+        "(--api-key for the convert subcommand). "
+        "For a low-fidelity smoke test, pass --method text explicitly."
+    )
+
+
+def choose_conversion_method(requested: str) -> str:
     if requested != "auto":
         return requested
-    if os.environ.get("DOC2X_API_KEY"):
+    if os.environ.get(DOC2X_API_KEY_ENV):
         return "doc2x"
-    return "text"
+    die(doc2x_config_help())
+
+
+def config_present(value: str | None) -> bool:
+    return bool(value and value.strip())
+
+
+def translation_config_status(
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> dict[str, bool]:
+    return {
+        TRANSLATION_API_KEY_ENV: config_present(api_key or os.environ.get(TRANSLATION_API_KEY_ENV)),
+        TRANSLATION_BASE_URL_ENV: config_present(base_url or os.environ.get(TRANSLATION_BASE_URL_ENV)),
+        TRANSLATION_MODEL_ENV: config_present(model or os.environ.get(TRANSLATION_MODEL_ENV)),
+    }
+
+
+def missing_translation_config(
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> list[str]:
+    return [key for key, present in translation_config_status(api_key=api_key, base_url=base_url, model=model).items() if not present]
+
+
+def effective_doc2x_api_key(api_key: str | None = None) -> str | None:
+    return api_key or os.environ.get(DOC2X_API_KEY_ENV)
+
+
+def require_run_translation_config(args: argparse.Namespace) -> None:
+    missing = missing_translation_config(
+        api_key=args.translation_api_key,
+        base_url=args.translation_base_url,
+        model=args.translation_model,
+    )
+    if missing:
+        die(translation_config_help(missing))
+
+
+def should_preflight_doc2x_for_run(args: argparse.Namespace) -> bool:
+    if args.project or args.method not in {"auto", "doc2x"}:
+        return False
+    if args.url and arxiv_id_from_url(args.url):
+        return False
+    return True
 
 def maybe_existing_project(project: Path) -> bool:
     return project.is_dir() and any(project.rglob("*.tex"))
@@ -587,56 +708,256 @@ def maybe_existing_project(project: Path) -> bool:
 def maybe_existing_prepare(work: Path) -> bool:
     return (work / "pipeline_state.json").is_file() and (work / ENGLISH_SEGMENTS_NAME).is_file()
 
+
+def line_number_at(text: str, offset: int) -> int:
+    return text.count("\n", 0, max(0, offset)) + 1
+
+
+def snippet_at(text: str, offset: int, length: int = 180) -> str:
+    start = max(0, offset - length // 2)
+    end = min(len(text), offset + length // 2)
+    return compact_whitespace(text[start:end])
+
+
+def add_quality_issue(
+    issues: list[dict],
+    *,
+    kind: str,
+    severity: str,
+    source: str,
+    snippet: str,
+    suggestion: str,
+    line: int | None = None,
+    segment_id: str | None = None,
+) -> None:
+    issue = {
+        "kind": kind,
+        "severity": severity,
+        "source": source,
+        "snippet": snippet,
+        "suggestion": suggestion,
+    }
+    if line is not None:
+        issue["line"] = line
+    if segment_id:
+        issue["segment_id"] = segment_id
+    issues.append(issue)
+
+
+def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str | None = None) -> list[dict]:
+    issues: list[dict] = []
+    checks = [
+        (
+            "prompt_leak",
+            "error",
+            re.compile(r"(以下为翻译后的\s*LaTeX\s*文本|以下为翻译后的文本|Translated LaTeX text|Here is the translated|Here is the translation)", re.I),
+            "删除模型回复前缀，只保留论文正文译文。",
+        ),
+        (
+            "bad_reference_key",
+            "error",
+            re.compile(r"\\(?:cite|citep|citet|Cref|cref|ref|eqref|pageref|nameref)\{(?:\s*|\.\.\.)\}"),
+            "恢复原始引用 key，不能保留空引用或省略号引用。",
+        ),
+        (
+            "placeholder_leak",
+            "error",
+            re.compile(r"(__LATEX_BLOCK_\d+__|\\_\\_LATEX\\_BLOCK\\_\d+\\_\\_)"),
+            "恢复或删除内部占位符，最终 TeX/PDF 不应出现占位符文本。",
+        ),
+        (
+            "double_escaped_reference",
+            "error",
+            re.compile(r"\\\\(?:Cref|cref|ref|eqref|pageref|nameref|cite|citep|citet)\{"),
+            "引用命令不应被写成双反斜杠；应恢复为单个反斜杠。",
+        ),
+        (
+            "markdown_artifact",
+            "warn",
+            re.compile(r"(?<!\\)(?:\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`)"),
+            "清理 Markdown 标记，必要时改用原 LaTeX 强调命令。",
+        ),
+    ]
+    for kind, severity, pattern, suggestion in checks:
+        for match in pattern.finditer(text):
+            add_quality_issue(
+                issues,
+                kind=kind,
+                severity=severity,
+                source=source,
+                line=line_number_at(text, match.start()) if source.endswith(".tex") else None,
+                segment_id=segment_id,
+                snippet=snippet_at(text, match.start()),
+                suggestion=suggestion,
+            )
+
+    for line_no, line in enumerate(text.splitlines(), 1):
+        if re.search(r"\S.{0,120}\\(?:section|subsection|subsubsection)\{", line):
+            add_quality_issue(
+                issues,
+                kind="latex_section_inside_prose",
+                severity="error",
+                source=source,
+                line=line_no if source.endswith(".tex") else None,
+                segment_id=segment_id,
+                snippet=compact_whitespace(line),
+                suggestion="检查是否把章节命令误插入正文；正文中的章节引用应使用 \\ref 或自然语言。",
+            )
+        cjk_count = sum("\u4e00" <= ch <= "\u9fff" for ch in line)
+        if cjk_count < 8:
+            continue
+        prose_line = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?(?:\{[^{}]*\})?", " ", line)
+        residue_patterns = [
+            r"\b(?:and|or|with|as|by|from|to|for|of|in|on)\s+[A-Za-z][A-Za-z-]*",
+            r"\b(?:Nevertheless|However|Therefore|Overall),?\s+[A-Za-z]",
+            r"\b(?:Table|Figure|Section)~?\\ref",
+        ]
+        if any(re.search(pattern, prose_line) for pattern in residue_patterns) or re.search(r"\b(?:Table|Figure|Section)~?\\ref", line):
+            add_quality_issue(
+                issues,
+                kind="english_residue",
+                severity="warn",
+                source=source,
+                line=line_no if source.endswith(".tex") else None,
+                segment_id=segment_id,
+                snippet=compact_whitespace(line),
+                suggestion="人工复查该句是否残留英文连接词、说明短语或未翻译正文。",
+            )
+    list_pattern = re.compile(r"\\begin\{(enumerate|itemize|description)\}(.*?)\\end\{\1\}", re.S)
+    for match in list_pattern.finditer(text):
+        body = match.group(2).lstrip()
+        if body and not body.startswith(r"\item"):
+            add_quality_issue(
+                issues,
+                kind="missing_list_item",
+                severity="error",
+                source=source,
+                line=line_number_at(text, match.start()) if source.endswith(".tex") else None,
+                segment_id=segment_id,
+                snippet=snippet_at(text, match.start()),
+                suggestion="列表环境中的每个条目必须以 \\item 开头；模型修稿时应恢复被删除的 \\item。",
+            )
+    return issues
+
+
+def write_quality_report(work: Path, translations_path: Path | None = None) -> tuple[Path, Path, int]:
+    tex_path = work / f"{CHINESE_MERGED_BASENAME}.tex"
+    issues: list[dict] = []
+    if tex_path.is_file():
+        issues.extend(collect_quality_issues_from_text(tex_path.read_text(encoding="utf-8", errors="replace"), source=tex_path.name))
+
+    segments: dict[str, str] = {}
+    segments_path = work / ENGLISH_SEGMENTS_NAME
+    if segments_path.is_file():
+        segments = {row.get("id", ""): row.get("text", "") for row in load_jsonl(segments_path) if row.get("id")}
+    check_translations = translations_path or work / CHINESE_REVIEWED_TRANSLATIONS_NAME
+    if check_translations.is_file():
+        for row in load_jsonl(check_translations):
+            segment_id = row.get("id")
+            translated = row.get("translation", "")
+            original = segments.get(segment_id or "", "")
+            if segment_id and original and is_probably_untranslated(original, translated):
+                add_quality_issue(
+                    issues,
+                    kind="likely_untranslated_segment",
+                    severity="warn",
+                    source=check_translations.name,
+                    segment_id=segment_id,
+                    snippet=compact_whitespace(translated[:220]),
+                    suggestion="该 segment 疑似英文残留过多；模型二次审阅时应对照原文重译。",
+                )
+            if segment_id and translated:
+                issues.extend(collect_quality_issues_from_text(translated, source=check_translations.name, segment_id=segment_id))
+
+    payload = {"issue_count": len(issues), "issues": issues}
+    json_path = work / CHINESE_QUALITY_REPORT_JSON_NAME
+    md_path = work / CHINESE_QUALITY_REPORT_MD_NAME
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    lines = ["# 中文译稿质量审阅清单", "", f"- Issue count: {len(issues)}", ""]
+    if issues:
+        for index, issue in enumerate(issues, 1):
+            location = []
+            if "line" in issue:
+                location.append(f"line {issue['line']}")
+            if "segment_id" in issue:
+                location.append(str(issue["segment_id"]))
+            where = f" ({', '.join(location)})" if location else ""
+            lines.append(f"{index}. **{issue['severity']} / {issue['kind']}**{where}")
+            lines.append(f"   - Snippet: `{issue['snippet']}`")
+            lines.append(f"   - Action: {issue['suggestion']}")
+    else:
+        lines.append("No obvious machine-detectable issues were found. The model should still review the PDF visually.")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return json_path, md_path, len(issues)
+
 def write_run_summary(
     path: Path,
     *,
+    status: str = "succeeded",
+    error: str | None = None,
     method: str,
-    rebuild_mode: str,
     source: str,
     project: Path,
     work: Path,
-    pdf: Path,
-    english_tex: Path,
-    tex: Path,
+    pdf: Path | None,
+    english_tex: Path | None,
+    tex: Path | None,
+    quality_report_json: Path,
+    quality_report_md: Path,
+    quality_issue_count: int,
     vision_pack: Path | None = None,
+    vision_pack_note: str | None = None,
 ) -> None:
     summary = {
+        "status": status,
         "method": method,
-        "rebuild_mode": rebuild_mode,
         "source": source,
         "project": str(project),
         "work": str(work),
-        "pdf": str(pdf),
         "work_pdf": str(work / f"{CHINESE_MERGED_BASENAME}.pdf"),
         "segments_english": str(work / ENGLISH_SEGMENTS_NAME),
         "glossary_english": str(work / ENGLISH_GLOSSARY_NAME),
         "translations": str(work / CHINESE_TRANSLATIONS_NAME),
         "reviewed_translations": str(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
-        "english_tex": str(english_tex),
-        "tex": str(tex),
         "work_english_tex": str(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
         "work_tex": str(work / f"{CHINESE_MERGED_BASENAME}.tex"),
         "consistency_report": str(work / CHINESE_CONSISTENCY_REPORT_NAME),
+        "quality_report_json": str(quality_report_json),
+        "quality_report_md": str(quality_report_md),
+        "quality_issue_count": quality_issue_count,
         "skill_home": str(skill_home_dir()),
         "tmp_root": str(skill_tmp_dir()),
     }
+    if error:
+        summary["error"] = error
+    if pdf is not None:
+        summary["pdf"] = str(pdf)
+    if english_tex is not None:
+        summary["english_tex"] = str(english_tex)
+    if tex is not None:
+        summary["tex"] = str(tex)
     if vision_pack is not None:
         summary["vision_pack"] = str(vision_pack)
+    if vision_pack_note:
+        summary["vision_pack_note"] = vision_pack_note
     if is_wsl():
         windows_fields = {
             "project_windows": windows_visible_path(project),
             "work_windows": windows_visible_path(work),
-            "pdf_windows": windows_visible_path(pdf),
+            "pdf_windows": windows_visible_path(pdf) if pdf else None,
             "work_pdf_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.pdf"),
             "segments_english_windows": windows_visible_path(work / ENGLISH_SEGMENTS_NAME),
             "glossary_english_windows": windows_visible_path(work / ENGLISH_GLOSSARY_NAME),
             "translations_windows": windows_visible_path(work / CHINESE_TRANSLATIONS_NAME),
             "reviewed_translations_windows": windows_visible_path(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
-            "english_tex_windows": windows_visible_path(english_tex),
-            "tex_windows": windows_visible_path(tex),
+            "english_tex_windows": windows_visible_path(english_tex) if english_tex else None,
+            "tex_windows": windows_visible_path(tex) if tex else None,
             "work_english_tex_windows": windows_visible_path(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
             "work_tex_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.tex"),
             "consistency_report_windows": windows_visible_path(work / CHINESE_CONSISTENCY_REPORT_NAME),
+            "quality_report_json_windows": windows_visible_path(quality_report_json),
+            "quality_report_md_windows": windows_visible_path(quality_report_md),
             "skill_home_windows": windows_visible_path(skill_home_dir()),
             "tmp_root_windows": windows_visible_path(skill_tmp_dir()),
             "vision_pack_windows": windows_visible_path(vision_pack) if vision_pack else None,
@@ -645,6 +966,9 @@ def write_run_summary(
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def cmd_run(args: argparse.Namespace) -> None:
+    require_run_translation_config(args)
+    if should_preflight_doc2x_for_run(args) and not config_present(effective_doc2x_api_key(args.doc2x_api_key)):
+        die(doc2x_config_help())
     source_hint = args.project or args.pdf or args.url or "run"
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else default_task_output_dir(source_hint)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -665,7 +989,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         method = "project"
         source = str(project)
     else:
-        method = choose_conversion_method(args.method, bool(args.url))
+        method = args.method
         source = args.url or str(Path(args.pdf).resolve())
         arxiv_id = arxiv_id_from_url(args.url) if args.url else None
         if arxiv_id and maybe_existing_project(arxiv_convert_dir / "project") and not args.force_convert:
@@ -688,6 +1012,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                     method = "arxiv-src"
                     source = args.url
             if method != "arxiv-src" and pdf_path is None:
+                method = choose_conversion_method(args.method)
                 pdf_path = Path(args.pdf).resolve() if args.pdf else None
             if method != "arxiv-src" and args.url and pdf_path is None:
                 pdf_path = download_remote_pdf(args.url, convert_dir / "remote_source")
@@ -766,20 +1091,62 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         translations_for_apply = work_dir / CHINESE_REVIEWED_TRANSLATIONS_NAME
     cmd_apply(argparse.Namespace(work=str(work_dir), translations=str(translations_for_apply)))
-    cmd_compile(
-        argparse.Namespace(
-            work=str(work_dir),
-            main=CHINESE_MERGED_BASENAME,
-            compiler=args.compiler,
-            timeout_seconds=args.compile_timeout_seconds,
-        )
+    quality_json, quality_md, quality_issue_count = write_quality_report(work_dir, translations_for_apply)
+    log_path_hint("Quality report JSON", quality_json)
+    log_path_hint("Quality report Markdown", quality_md)
+    summary_path = output_dir / "run_summary.json"
+    write_run_summary(
+        summary_path,
+        status="compile_pending",
+        method=method,
+        source=source,
+        project=project,
+        work=work_dir,
+        pdf=None,
+        english_tex=None,
+        tex=None,
+        quality_report_json=quality_json,
+        quality_report_md=quality_md,
+        quality_issue_count=quality_issue_count,
+        vision_pack_note="vision_pack is generated after a successful compile",
     )
+    try:
+        cmd_compile(
+            argparse.Namespace(
+                work=str(work_dir),
+                main=CHINESE_MERGED_BASENAME,
+                compiler=args.compiler,
+                timeout_seconds=args.compile_timeout_seconds,
+            )
+        )
+    except SystemExit:
+        work_pdf = work_dir / f"{CHINESE_MERGED_BASENAME}.pdf"
+        write_run_summary(
+            summary_path,
+            status="compile_failed",
+            error=f"compile failed; inspect {work_dir / f'{CHINESE_MERGED_BASENAME}.log'} and repair {work_dir / f'{CHINESE_MERGED_BASENAME}.tex'}",
+            method=method,
+            source=source,
+            project=project,
+            work=work_dir,
+            pdf=work_pdf if work_pdf.is_file() else None,
+            english_tex=work_dir / f"{ENGLISH_MERGED_BASENAME}.tex",
+            tex=work_dir / f"{CHINESE_MERGED_BASENAME}.tex",
+            quality_report_json=quality_json,
+            quality_report_md=quality_md,
+            quality_issue_count=quality_issue_count,
+            vision_pack_note="vision_pack was not generated because compile failed",
+        )
+        log_path_hint("Run summary", summary_path)
+        raise
 
     pdf = work_dir / f"{CHINESE_MERGED_BASENAME}.pdf"
     vision_pack: Path | None = None
-    if args.rebuild_mode == "vision-rebuild":
-        if source_pdf_for_pack is None or not source_pdf_for_pack.is_file():
-            die("--source-pdf is required for --rebuild-mode vision-rebuild when using --project")
+    vision_pack_note: str | None = None
+    if source_pdf_for_pack is None or not source_pdf_for_pack.is_file():
+        vision_pack_note = "source PDF was not available; vision_pack was not generated"
+        log(f"Vision review pack: skipped ({vision_pack_note})")
+    else:
         vision_pack = prepare_vision_review_pack(
             source_pdf=source_pdf_for_pack,
             translated_pdf=pdf,
@@ -792,22 +1159,69 @@ def cmd_run(args: argparse.Namespace) -> None:
     artifact_base = output_artifact_base_for_run(source=source, project=project, source_pdf=source_pdf_for_pack)
     exported = export_named_outputs(output_dir, work_dir, artifact_base)
     write_run_summary(
-        output_dir / "run_summary.json",
+        summary_path,
         method=method,
-        rebuild_mode=args.rebuild_mode,
         source=source,
         project=project,
         work=work_dir,
         pdf=exported["pdf"],
         english_tex=exported["english_tex"],
         tex=exported["tex"],
+        quality_report_json=quality_json,
+        quality_report_md=quality_md,
+        quality_issue_count=quality_issue_count,
         vision_pack=vision_pack,
+        vision_pack_note=vision_pack_note,
     )
-    log_path_hint("Run summary", output_dir / "run_summary.json")
+    log_path_hint("Run summary", summary_path)
     log_path_hint("English TeX", exported["english_tex"])
     log_path_hint("Chinese TeX", exported["tex"])
     log_path_hint("Chinese PDF", exported["pdf"])
     print(exported["pdf"])
+
+def cmd_quality_check(args: argparse.Namespace) -> None:
+    work = Path(args.work).resolve()
+    translations = Path(args.translations).resolve() if args.translations else None
+    json_path, md_path, issue_count = write_quality_report(work, translations)
+    log(f"Quality issues: {issue_count}")
+    log_path_hint("Quality report JSON", json_path)
+    log_path_hint("Quality report Markdown", md_path)
+    print(json_path)
+
+
+def cmd_check_config(args: argparse.Namespace) -> None:
+    candidates = resolve_dotenv_candidates(getattr(args, "env_file", None))
+    loaded = [path for path in candidates if path.is_file()]
+    log("Env files checked:")
+    for path in candidates:
+        suffix = " (loaded)" if path in loaded else ""
+        log(f"  {path}{suffix}")
+    if not loaded:
+        log("  no .env file was found; CLI flags or process environment variables may still provide config")
+
+    translation_status = translation_config_status(
+        api_key=args.translation_api_key,
+        base_url=args.translation_base_url,
+        model=args.translation_model,
+    )
+    log("Translation API config:")
+    for key, present in translation_status.items():
+        log(f"  {key}: {'configured' if present else 'missing'}")
+
+    doc2x_present = config_present(effective_doc2x_api_key(args.doc2x_api_key))
+    log("DOC2X config:")
+    log(f"  {DOC2X_API_KEY_ENV}: {'configured' if doc2x_present else 'missing'}")
+
+    problems: list[str] = []
+    missing_translation = [key for key, present in translation_status.items() if not present]
+    if missing_translation:
+        problems.append(translation_config_help(missing_translation))
+    if not doc2x_present:
+        problems.append(doc2x_config_help())
+    if problems:
+        die("\n".join(problems))
+    log("Config OK")
+
 
 def cmd_paths(_: argparse.Namespace) -> None:
     log_path_hint("Skill home", skill_home_dir())
@@ -894,6 +1308,18 @@ def build_parser() -> argparse.ArgumentParser:
     vision_pack_cmd.add_argument("--tex", help="optional translated TeX path for later patching")
     vision_pack_cmd.set_defaults(func=cmd_prepare_vision_pack)
 
+    quality_cmd = sub.add_parser("quality-check", help="write machine-detectable translation quality review reports")
+    quality_cmd.add_argument("--work", required=True)
+    quality_cmd.add_argument("--translations", help=f"default: <work>/{CHINESE_REVIEWED_TRANSLATIONS_NAME}")
+    quality_cmd.set_defaults(func=cmd_quality_check)
+
+    check_config_cmd = sub.add_parser("check-config", help="check .env/API configuration without printing secret values")
+    check_config_cmd.add_argument("--translation-api-key", help="translation API key; prefer PDF2ZH_TRANSLATION_API_KEY in .env")
+    check_config_cmd.add_argument("--translation-base-url", help="OpenAI-compatible chat completions base URL; prefer PDF2ZH_TRANSLATION_BASE_URL in .env")
+    check_config_cmd.add_argument("--translation-model", help="translation model name; prefer PDF2ZH_TRANSLATION_MODEL in .env")
+    check_config_cmd.add_argument("--doc2x-api-key", help="DOC2X API key; prefer DOC2X_API_KEY in .env")
+    check_config_cmd.set_defaults(func=cmd_check_config)
+
     apply = sub.add_parser("apply", help=f"apply translations JSONL and write {CHINESE_MERGED_BASENAME}.tex")
     apply.add_argument("--work", required=True)
     apply.add_argument("--translations", required=True)
@@ -910,15 +1336,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--pdf")
     run_cmd.add_argument("--url", help="Remote PDF URL; the file will be downloaded locally before conversion")
     run_cmd.add_argument("--project", help="Existing TeX project; skips conversion")
-    run_cmd.add_argument("--source-pdf", help="Original source PDF path; required for --rebuild-mode vision-rebuild when using --project")
+    run_cmd.add_argument("--source-pdf", help="Original source PDF path; used to generate the visual review pack when using --project")
     run_cmd.add_argument("--output-dir", help="default: create a fresh task folder under PDF2ZH_SKILL_TMPDIR")
     run_cmd.add_argument("--method", choices=["auto", "doc2x", "mathpix", "text"], default="auto")
-    run_cmd.add_argument("--rebuild-mode", choices=["rebuild", "vision-rebuild"], default="rebuild")
     run_cmd.add_argument("--vision-pages", default="1-3", help="page spec for vision compare pack, e.g. 1-3,5")
     run_cmd.add_argument("--translation-api-key", help="translation API key; prefer PDF2ZH_TRANSLATION_API_KEY in .env")
     run_cmd.add_argument("--translation-base-url", help="OpenAI-compatible chat completions base URL; prefer PDF2ZH_TRANSLATION_BASE_URL in .env")
     run_cmd.add_argument("--translation-model", help="translation model name; prefer PDF2ZH_TRANSLATION_MODEL in .env")
-    run_cmd.add_argument("--doc2x-api-key", help="DOC2X API key; prefer DOC2X_API_KEY env var")
+    run_cmd.add_argument("--doc2x-api-key", help="DOC2X API key; prefer DOC2X_API_KEY in .env")
     run_cmd.add_argument("--doc2x-model", choices=["v2", "v3-2026"], default="v2")
     run_cmd.add_argument("--mathpix-app-id")
     run_cmd.add_argument("--mathpix-app-key")
