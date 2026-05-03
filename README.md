@@ -50,6 +50,18 @@ python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --rebuild-m
 - `rebuild`: automatic translation and TeX-level rebuilding
 - `vision-rebuild`: generate a visual compare pack and iteratively patch layout by inspecting rendered pages
 
+## Example
+
+The repository includes a real before/after example for `Thinking_with_Visual_Primitives.pdf`.
+The image below shows the first page of the original English PDF on the left and the translated Chinese PDF on the right.
+
+![Thinking_with_Visual_Primitives before/after](docs/images/thinking_with_visual_primitives_before_after.png)
+
+Raw images are also included:
+
+- `docs/images/thinking_with_visual_primitives_before.png`
+- `docs/images/thinking_with_visual_primitives_after.png`
+
 ## Files
 
 - `SKILL.md`: skill contract and operating notes
