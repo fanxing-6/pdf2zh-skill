@@ -111,6 +111,9 @@ def sanitize_latex_source(text: str) -> str:
     text = re.sub(r"^[ \t]*\\usepackage(?:\[[^\]]*\])?\{ucharclasses\}[ \t]*\n", "", text, flags=re.M)
     text = normalize_linebreak_dimension_commands(text)
     text = normalize_section_reference_phrases(text)
+    text = drop_visual_demo_ocr_blocks(text)
+    text = normalize_reference_heading(text)
+    text = normalize_caption_prefixes(text)
     text = strip_markdown_emphasis_artifacts(text)
     text = normalize_reference_command_arguments(text)
     text = normalize_font_fallback_blocks(text)
@@ -205,6 +208,95 @@ def strip_markdown_emphasis_artifacts(text: str) -> str:
     text = re.sub(r"(?<!\\)\*\*([^\n*][^\n]*?[^\n*])(?<!\\)\*\*", r"\1", text)
     text = re.sub(r"(?<!\\)__([^\n_][^\n]*?[^\n_])(?<!\\)__", r"\1", text)
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)
+    return text
+
+
+def looks_like_visual_demo_ocr_block(text: str) -> bool:
+    stripped = compact_whitespace(text)
+    if len(stripped) < 80:
+        return False
+    signals = 0
+    if "Trigger\\_Placeholder" in text or "Trigger Placeholder" in text:
+        signals += 2
+    point_hits = len(re.findall(r"(?:<\s*\|\s*/?\s*point\s*\|>|\\text\{\s*/?\s*point\s*\}|/point)", text, re.I))
+    if point_hits >= 3:
+        signals += 1
+    coord_hits = len(re.findall(r"\d{2,4}\s*,\s*\d{2,4}", text))
+    coord_hits += len(re.findall(r"\{\d{2,4}\}\s*,\s*\{\d{2,4}\}", text))
+    coord_hits += len(re.findall(r"\[\d{2,4}\s*,\s*\d{2,4}\]", text))
+    if coord_hits >= 6:
+        signals += 1
+    step_hits = len(re.findall(r"\bStep\d*\b|\bStart Exploring\b|\bResponse\b|\\boxed|boxed\\\{", text))
+    if step_hits >= 1 and point_hits >= 2 and len(stripped) >= 100:
+        return True
+    if step_hits >= 2:
+        signals += 1
+    if len(stripped) > 220 and point_hits >= 2 and coord_hits >= 4:
+        signals += 1
+    return signals >= 2
+
+
+def drop_visual_demo_ocr_blocks(text: str) -> str:
+    parts = re.split(r"(\n\s*\n)", text)
+    dropped = [False] * len(parts)
+
+    def is_separator(index: int) -> bool:
+        return bool(re.fullmatch(r"\n\s*\n", parts[index]))
+
+    def neighbor_content(index: int, direction: int) -> int | None:
+        cursor = index + direction
+        while 0 <= cursor < len(parts):
+            if not is_separator(cursor):
+                return cursor
+            cursor += direction
+        return None
+
+    for index, part in enumerate(parts):
+        if is_separator(index):
+            continue
+        if looks_like_visual_demo_ocr_block(part):
+            dropped[index] = True
+
+    for index, part in enumerate(parts):
+        if is_separator(index) or dropped[index]:
+            continue
+        stripped = compact_whitespace(part)
+        letters = sum("A" <= ch <= "Z" or "a" <= ch <= "z" for ch in stripped)
+        cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in stripped)
+        prev_index = neighbor_content(index, -1)
+        next_index = neighbor_content(index, 1)
+        adjacent_to_dropped = (
+            (prev_index is not None and dropped[prev_index])
+            or (next_index is not None and dropped[next_index])
+        )
+        if not adjacent_to_dropped:
+            continue
+        if stripped == "Thinking with Visual Primitives":
+            dropped[index] = True
+            continue
+        if cjk == 0 and letters >= 12 and len(stripped) <= 120:
+            dropped[index] = True
+
+    kept = [part for index, part in enumerate(parts) if not dropped[index]]
+    return re.sub(r"\n{4,}", "\n\n", "".join(kept))
+
+
+def normalize_reference_heading(text: str) -> str:
+    first_ref = re.search(r"(?m)^\{\[\}1\{\]\}", text)
+    if not first_ref:
+        return text
+
+    prefix = text[: first_ref.start()]
+    suffix = text[first_ref.start() :]
+    prefix = re.sub(r"(?:References|参考文献)\s*", "\n\n", prefix, count=1)
+    if r"\section*{参考文献}" not in prefix:
+        prefix = prefix.rstrip() + "\n\n\\section*{参考文献}\n\n"
+    return prefix + suffix.lstrip()
+
+
+def normalize_caption_prefixes(text: str) -> str:
+    text = re.sub(r"(?m)^Figure\s+(\d+)\s*\|", r"图\1 |", text)
+    text = re.sub(r"(?m)^Table\s+(\d+)\s*\|", r"表\1 |", text)
     return text
 
 
@@ -572,9 +664,18 @@ def mask_latex_blocks_for_translation(text: str) -> tuple[str, dict[str, str]]:
 
 
 def unmask_latex_blocks(text: str, protected: dict[str, str]) -> str:
+    text = restore_mask_token_variants(text)
     for token, original in protected.items():
         text = text.replace(token, original)
     return text
+
+
+def restore_mask_token_variants(text: str) -> str:
+    return re.sub(
+        r"(?:\\_|_){2}LATEX(?:\\_|_)BLOCK(?:\\_|_)\d{4}(?:\\_|_){2}",
+        lambda match: match.group(0).replace(r"\_", "_"),
+        text,
+    )
 
 def split_nodes(text: str) -> list[Node]:
     spans = protected_spans(text)
@@ -607,6 +708,8 @@ def split_nodes(text: str) -> list[Node]:
 def should_translate(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
+        return False
+    if re.match(r"^\{\[\}\d+\{\]\}", stripped) or re.match(r"^\[\d+\]", stripped):
         return False
     letters = sum(ch.isalpha() for ch in stripped)
     commands = stripped.count("\\")

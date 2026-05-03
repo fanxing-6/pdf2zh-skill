@@ -88,7 +88,7 @@ python scripts/pdf2zh_pipeline.py paths
 1. 先完整执行 `rebuild` 路径，得到可编译的中文 PDF
 2. 额外生成 `vision_pack/`，把原 PDF 与当前中文 PDF 的对应页面渲染成图片
 3. Codex 直接查看这些页面图片，比较标题页、图注块、列表块、段间距、图文顺序和局部英文保留情况
-4. Codex 修改 `merge_中文.tex`
+4. Codex 修改内部工作文件 `merge_中文.tex`
 5. 重新编译并迭代，直到视觉版式更接近原 PDF
 
 视觉能力来自 Codex 自身，不来自外部视觉 API。
@@ -108,8 +108,8 @@ python scripts/pdf2zh_pipeline.py paths
 3. 先基于全文片段生成 article-level `glossary_English.json`
 4. 使用用户提供的翻译 API 并行翻译片段，并增量写入 `translations_中文.jsonl`
 5. 对译文做一次术语一致性复审，输出 `translations_reviewed_中文.jsonl` 与 `consistency_report_中文.json`
-6. 重新组装 `merge_中文.tex`
-7. 编译出中文 PDF，并写出 `run_summary.json`
+6. 重新组装内部工作文件 `merge_中文.tex`
+7. 编译出中文 PDF，并在任务目录导出以原文件名命名的最终交付物，同时写出 `run_summary.json`
 8. 若 `--rebuild-mode vision-rebuild`，额外生成 `vision_pack/`
 
 如果用户给的是 arXiv 源码目录或已解压的 TeX 项目，则跳过 PDF 解析，直接从项目目录开始。
@@ -176,6 +176,14 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
 
 如果论文长度足够且存在重复核心术语，当前流程会自动生成 `glossary_English.json`，并在翻译后对命中术语的 segment 进行二次一致性修订。短文档或术语重复度不足时，glossary 可能为空，此时一致性复审会自动退化为 no-op，并在 `consistency_report_中文.json` 中写明原因。
 
+最终交付文件的命名规则如下：
+
+- 英文合并稿：`<原文件名>_English.tex`
+- 中文合并稿：`<原文件名>_中文.tex`
+- 中文 PDF：`<原文件名>_中文.pdf`
+
+内部工作目录 `zh/` 仍保留稳定的 `merge_English.tex`、`merge_中文.tex`、`merge_中文.pdf`，以避免打乱编译和视觉重建链路；但交付给用户查看和打开的文件必须使用原文件名后缀。
+
 ## `vision-rebuild` SOP
 
 当用户明确要求尽量贴近原 PDF 的视觉版式时，按下面流程执行：
@@ -212,16 +220,11 @@ python scripts/pdf2zh_pipeline.py compile --work work/zh
 
 ## 默认产物命名
 
-默认情况下，Skill 会尽量给带有明确语言属性的产物追加语言后缀：
+默认情况下，Skill 会保留两套命名：
 
-- 英文合并稿：`merge_English.tex`
-- 中文合并稿：`merge_中文.tex`
-- 中文 PDF：`merge_中文.pdf`
-- 英文分段文件：`segments_English.jsonl`
-- 英文术语表：`glossary_English.json`
-- 中文翻译结果：`translations_中文.jsonl`
-- 中文复审结果：`translations_reviewed_中文.jsonl`
-- 中文一致性报告：`consistency_report_中文.json`
+- 对外交付文件：`<原文件名>_English.tex`、`<原文件名>_中文.tex`、`<原文件名>_中文.pdf`
+- 内部工作文件：`merge_English.tex`、`merge_中文.tex`、`merge_中文.pdf`
+- 其他稳定中间产物：`segments_English.jsonl`、`glossary_English.json`、`translations_中文.jsonl`、`translations_reviewed_中文.jsonl`、`consistency_report_中文.json`
 
 ## 资源
 

@@ -396,7 +396,29 @@ def strip_code_fence(text: str) -> str:
         text = "\n".join(lines).strip()
     return text
 
+def strip_leading_source_echo(original: str, translated: str) -> str:
+    original = original.strip()
+    translated = translated.strip()
+    if not original or not translated:
+        return translated
+    position = translated.find(original)
+    if position < 0 or position > 24:
+        return translated
+    candidate = translated[position + len(original) :].lstrip(" \n\r\t:：-")
+    translated_cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in candidate)
+    return candidate if translated_cjk >= 8 else translated
+
+def has_large_source_echo(original: str, translated: str) -> bool:
+    original = compact_whitespace(original)
+    translated = compact_whitespace(translated)
+    if len(original) < 80 or len(translated) <= len(original) + 8:
+        return False
+    position = translated.find(original)
+    return 0 <= position <= 24
+
 def is_probably_untranslated(original: str, translated: str) -> bool:
+    if has_large_source_echo(original, translated):
+        return True
     original_letters = sum("A" <= ch <= "Z" or "a" <= ch <= "z" for ch in original)
     translated_cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in translated)
     if original_letters < 80:

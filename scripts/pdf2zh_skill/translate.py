@@ -337,7 +337,8 @@ def call_translation_api(
         max_retries=max_retries,
         temperature=0.1,
     )
-    return unmask_latex_blocks(strip_code_fence(content), protected)
+    translated = unmask_latex_blocks(strip_code_fence(content), protected)
+    return strip_leading_source_echo(text, translated)
 
 def translate_with_retries(
     text: str,
@@ -435,4 +436,5 @@ def revise_translation_for_consistency(
         max_retries=max_retries,
         temperature=0.0,
     )
-    return unmask_latex_blocks(strip_code_fence(revised), protected)
+    revised_text = unmask_latex_blocks(strip_code_fence(revised), protected)
+    return strip_leading_source_echo(original, revised_text)

@@ -17,6 +17,41 @@ CHINESE_REVIEWED_TRANSLATIONS_NAME = "translations_reviewed_中文.jsonl"
 CHINESE_CONSISTENCY_REPORT_NAME = "consistency_report_中文.json"
 
 
+def safe_output_artifact_base(name: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', "_", name).strip().rstrip(".")
+    return cleaned or "output"
+
+
+def output_artifact_base_for_run(
+    *,
+    source: str,
+    project: Path,
+    source_pdf: Path | None = None,
+) -> str:
+    if source_pdf is not None and source_pdf.is_file():
+        return safe_output_artifact_base(source_pdf.stem)
+    if re.match(r"^https?://", source):
+        parsed = urlparse(source)
+        candidate = Path(parsed.path).stem or Path(parsed.path).name
+    else:
+        candidate = Path(source).stem or Path(source).name
+    if not candidate or candidate in {"project", "source", "output", "run"}:
+        candidate = project.stem or project.name
+    return safe_output_artifact_base(candidate)
+
+
+def export_named_outputs(output_dir: Path, work: Path, artifact_base: str) -> dict[str, Path]:
+    exports = {
+        "english_tex": output_dir / f"{artifact_base}_English.tex",
+        "tex": output_dir / f"{artifact_base}_中文.tex",
+        "pdf": output_dir / f"{artifact_base}_中文.pdf",
+    }
+    shutil.copy2(work / f"{ENGLISH_MERGED_BASENAME}.tex", exports["english_tex"])
+    shutil.copy2(work / f"{CHINESE_MERGED_BASENAME}.tex", exports["tex"])
+    shutil.copy2(work / f"{CHINESE_MERGED_BASENAME}.pdf", exports["pdf"])
+    return exports
+
+
 def extract_env_file_arg(argv: list[str] | None) -> str | None:
     if not argv:
         return None
@@ -561,6 +596,8 @@ def write_run_summary(
     project: Path,
     work: Path,
     pdf: Path,
+    english_tex: Path,
+    tex: Path,
     vision_pack: Path | None = None,
 ) -> None:
     summary = {
@@ -570,12 +607,15 @@ def write_run_summary(
         "project": str(project),
         "work": str(work),
         "pdf": str(pdf),
+        "work_pdf": str(work / f"{CHINESE_MERGED_BASENAME}.pdf"),
         "segments_english": str(work / ENGLISH_SEGMENTS_NAME),
         "glossary_english": str(work / ENGLISH_GLOSSARY_NAME),
         "translations": str(work / CHINESE_TRANSLATIONS_NAME),
         "reviewed_translations": str(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
-        "english_tex": str(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
-        "tex": str(work / f"{CHINESE_MERGED_BASENAME}.tex"),
+        "english_tex": str(english_tex),
+        "tex": str(tex),
+        "work_english_tex": str(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
+        "work_tex": str(work / f"{CHINESE_MERGED_BASENAME}.tex"),
         "consistency_report": str(work / CHINESE_CONSISTENCY_REPORT_NAME),
         "skill_home": str(skill_home_dir()),
         "tmp_root": str(skill_tmp_dir()),
@@ -587,12 +627,15 @@ def write_run_summary(
             "project_windows": windows_visible_path(project),
             "work_windows": windows_visible_path(work),
             "pdf_windows": windows_visible_path(pdf),
+            "work_pdf_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.pdf"),
             "segments_english_windows": windows_visible_path(work / ENGLISH_SEGMENTS_NAME),
             "glossary_english_windows": windows_visible_path(work / ENGLISH_GLOSSARY_NAME),
             "translations_windows": windows_visible_path(work / CHINESE_TRANSLATIONS_NAME),
             "reviewed_translations_windows": windows_visible_path(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
-            "english_tex_windows": windows_visible_path(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
-            "tex_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.tex"),
+            "english_tex_windows": windows_visible_path(english_tex),
+            "tex_windows": windows_visible_path(tex),
+            "work_english_tex_windows": windows_visible_path(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
+            "work_tex_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.tex"),
             "consistency_report_windows": windows_visible_path(work / CHINESE_CONSISTENCY_REPORT_NAME),
             "skill_home_windows": windows_visible_path(skill_home_dir()),
             "tmp_root_windows": windows_visible_path(skill_tmp_dir()),
@@ -746,6 +789,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         log_path_hint("Vision review pack", vision_pack)
         log_path_hint("Vision review manifest", vision_pack / "manifest.json")
+    artifact_base = output_artifact_base_for_run(source=source, project=project, source_pdf=source_pdf_for_pack)
+    exported = export_named_outputs(output_dir, work_dir, artifact_base)
     write_run_summary(
         output_dir / "run_summary.json",
         method=method,
@@ -753,12 +798,16 @@ def cmd_run(args: argparse.Namespace) -> None:
         source=source,
         project=project,
         work=work_dir,
-        pdf=pdf,
+        pdf=exported["pdf"],
+        english_tex=exported["english_tex"],
+        tex=exported["tex"],
         vision_pack=vision_pack,
     )
     log_path_hint("Run summary", output_dir / "run_summary.json")
-    log_path_hint("Chinese PDF", pdf)
-    print(pdf)
+    log_path_hint("English TeX", exported["english_tex"])
+    log_path_hint("Chinese TeX", exported["tex"])
+    log_path_hint("Chinese PDF", exported["pdf"])
+    print(exported["pdf"])
 
 def cmd_paths(_: argparse.Namespace) -> None:
     log_path_hint("Skill home", skill_home_dir())
