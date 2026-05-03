@@ -102,6 +102,9 @@ def normalize_problem_unicode(text: str) -> str:
 
 def sanitize_latex_source(text: str) -> str:
     text = normalize_problem_unicode(text)
+    # arXiv sources often include pdfTeX-only directives. They break the
+    # LuaLaTeX/XeLaTeX path used for Chinese output and are unnecessary here.
+    text = re.sub(r"(?m)^[ \t]*\\pdfoutput[ \t]*=[ \t]*1[ \t]*(?:%.*)?\n?", "", text, count=1)
     # Some PDF-to-TeX converters emit XeTeX-only font helpers. This skill
     # prefers LuaLaTeX for CJK robustness, so keep language handling in ctex.
     text = re.sub(r"^[ \t]*\\usepackage(?:\[[^\]]*\])?\{ucharclasses\}[ \t]*\n", "", text, flags=re.M)

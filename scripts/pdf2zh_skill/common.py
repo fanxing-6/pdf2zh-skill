@@ -441,6 +441,13 @@ def has_large_source_echo(original: str, translated: str) -> bool:
 def is_probably_untranslated(original: str, translated: str) -> bool:
     if has_large_source_echo(original, translated):
         return True
+    stripped_translation = translated.strip()
+    if (
+        stripped_translation.startswith("[")
+        and re.search(r"\b[A-Za-z][A-Za-z-]*\s*=", stripped_translation)
+        and sum("\u4e00" <= ch <= "\u9fff" for ch in stripped_translation) < 8
+    ):
+        return False
     original_letters = sum("A" <= ch <= "Z" or "a" <= ch <= "z" for ch in original)
     translated_cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in translated)
     if original_letters < 80:

@@ -772,9 +772,18 @@ def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str 
             "引用命令不应被写成双反斜杠；应恢复为单个反斜杠。",
         ),
         (
+            "malformed_reference_command",
+            "error",
+            re.compile(
+                r"\\(?:cite|citep|citet|Cref|cref|ref|eqref|pageref|nameref)\s*"
+                r"\\(?:cite|citep|citet|Cref|cref|ref|eqref|pageref|nameref)\{"
+            ),
+            "引用命令被重复拼接；应保留一个引用命令并恢复正确 key。",
+        ),
+        (
             "markdown_artifact",
             "warn",
-            re.compile(r"(?<!\\)(?:\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`)"),
+            re.compile(r"(?<!\\)(?:\*\*[^*\n]+\*\*|__[^_\n]+__|(?<!`)`(?!`)[^`\n]+(?<!`)`(?!`))"),
             "清理 Markdown 标记，必要时改用原 LaTeX 强调命令。",
         ),
     ]
@@ -826,6 +835,19 @@ def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str 
     list_pattern = re.compile(r"\\begin\{(enumerate|itemize|description)\}(.*?)\\end\{\1\}", re.S)
     for match in list_pattern.finditer(text):
         body = match.group(2).lstrip()
+        if body.startswith("["):
+            option_depth = 0
+            option_end = None
+            for index, char in enumerate(body):
+                if char == "[":
+                    option_depth += 1
+                elif char == "]":
+                    option_depth -= 1
+                    if option_depth == 0:
+                        option_end = index + 1
+                        break
+            if option_end is not None:
+                body = body[option_end:].lstrip()
         if body and not body.startswith(r"\item"):
             add_quality_issue(
                 issues,
@@ -843,8 +865,12 @@ def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str 
 def write_quality_report(work: Path, translations_path: Path | None = None) -> tuple[Path, Path, int]:
     tex_path = work / f"{CHINESE_MERGED_BASENAME}.tex"
     issues: list[dict] = []
+    tex_text = ""
+    tex_text_compact = ""
     if tex_path.is_file():
-        issues.extend(collect_quality_issues_from_text(tex_path.read_text(encoding="utf-8", errors="replace"), source=tex_path.name))
+        tex_text = tex_path.read_text(encoding="utf-8", errors="replace")
+        tex_text_compact = compact_whitespace(tex_text)
+        issues.extend(collect_quality_issues_from_text(tex_text, source=tex_path.name))
 
     segments: dict[str, str] = {}
     segments_path = work / ENGLISH_SEGMENTS_NAME
@@ -855,6 +881,11 @@ def write_quality_report(work: Path, translations_path: Path | None = None) -> t
         for row in load_jsonl(check_translations):
             segment_id = row.get("id")
             translated = row.get("translation", "")
+            translated_compact = compact_whitespace(translated)
+            if tex_text_compact and translated_compact:
+                probe = translated_compact[: min(120, len(translated_compact))]
+                if len(probe) >= 24 and probe not in tex_text_compact:
+                    continue
             original = segments.get(segment_id or "", "")
             if segment_id and original and is_probably_untranslated(original, translated):
                 add_quality_issue(
