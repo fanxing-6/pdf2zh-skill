@@ -10,6 +10,12 @@
 
 Convert academic PDF papers or arXiv/LaTeX sources into Chinese PDF outputs while preserving LaTeX structure as much as practical.
 
+## Update path
+
+Use this repository as the update source for the skill:
+
+`https://github.com/fanxing-6/pdf2zh-skill.git`
+
 ## What it does
 
 - Prefer arXiv source packages when available
