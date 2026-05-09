@@ -18,7 +18,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -441,6 +441,8 @@ def has_large_source_echo(original: str, translated: str) -> bool:
 def is_probably_untranslated(original: str, translated: str) -> bool:
     if has_large_source_echo(original, translated):
         return True
+    if is_latex_identity_frontmatter_segment(original):
+        return False
     stripped_translation = translated.strip()
     if (
         stripped_translation.startswith("[")
@@ -453,6 +455,11 @@ def is_probably_untranslated(original: str, translated: str) -> bool:
     if original_letters < 80:
         return False
     return translated_cjk < max(8, original_letters // 80)
+
+
+def is_latex_identity_frontmatter_segment(text: str) -> bool:
+    frontmatter_commands = r"\\(?:author|email|affiliation|institution|orcid|city|country)\{"
+    return bool(re.search(frontmatter_commands, text)) and text.count("\\") >= 2
 
 def compact_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()

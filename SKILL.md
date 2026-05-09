@@ -133,7 +133,13 @@ python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf 
 - Markdown 加粗、下划线加粗和单反引号残留
 - 模型输出原文回声
 
-质量报告只负责指出可检测问题，默认不中断编译。复杂编译错误和版式细节由 Codex 根据日志和视觉对照修复。
+质量报告中的 error 级问题会先进入自动修复通道；坏引用、占位符泄漏、双反斜杠引用、列表结构破坏和 LaTeX 控制词拆分等问题若修复后仍存在，会阻断编译并在 `run_summary.json` 中记录 `quality_failed`。warning 级问题继续作为模型二次审阅线索，不默认阻断编译。复杂编译错误和版式细节由 Codex 根据日志和视觉对照修复；若编译日志仍有严重错误但已经生成可读 PDF，流程会尽量生成诊断用 `vision_pack/`。
+
+修复脚本后可运行内置回归检查：
+
+```bash
+PYTHONPATH=scripts python -m pdf2zh_skill.regression_checks
+```
 
 ## WSL 与路径
 

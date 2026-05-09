@@ -18,6 +18,18 @@ CHINESE_CONSISTENCY_REPORT_NAME = "consistency_report_中文.json"
 CHINESE_QUALITY_REPORT_JSON_NAME = "quality_report_中文.json"
 CHINESE_QUALITY_REPORT_MD_NAME = "quality_report_中文.md"
 
+BLOCKING_QUALITY_KINDS = {
+    "prompt_leak",
+    "bad_reference_key",
+    "placeholder_leak",
+    "double_escaped_reference",
+    "malformed_reference_command",
+    "malformed_reference_key",
+    "latex_section_inside_prose",
+    "missing_list_item",
+    "latex_control_word_split",
+}
+
 
 def safe_output_artifact_base(name: str) -> str:
     cleaned = re.sub(r"\s+", " ", name)
@@ -635,6 +647,68 @@ def cmd_compile(args: argparse.Namespace) -> None:
         print(log.read_text(encoding="utf-8", errors="replace")[-8000:], file=sys.stderr)
     die("LaTeX compilation failed")
 
+
+def load_quality_issues(json_path: Path) -> list[dict]:
+    if not json_path.is_file():
+        return []
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    issues = payload.get("issues", [])
+    return issues if isinstance(issues, list) else []
+
+
+def blocking_quality_issues(json_path: Path) -> list[dict]:
+    return [
+        issue
+        for issue in load_quality_issues(json_path)
+        if issue.get("severity") == "error" or issue.get("kind") in BLOCKING_QUALITY_KINDS
+    ]
+
+
+def repair_translation_inventory(work: Path, translations_path: Path) -> int:
+    segments_path = work / ENGLISH_SEGMENTS_NAME
+    if not segments_path.is_file() or not translations_path.is_file():
+        return 0
+    segments = {row.get("id", ""): row.get("text", "") for row in load_jsonl(segments_path) if row.get("id")}
+    rows = load_jsonl(translations_path)
+    changed = 0
+    for row in rows:
+        segment_id = row.get("id")
+        original = segments.get(segment_id or "")
+        translated = row.get("translation", "")
+        if not original or not translated:
+            continue
+        fixed = fix_translation(translated, original)
+        if fixed != translated:
+            row["translation"] = fixed
+            changed += 1
+    if changed:
+        write_jsonl(translations_path, rows)
+    return changed
+
+
+def write_quality_report_with_repair(
+    work: Path,
+    translations_path: Path,
+    *,
+    max_repair_passes: int = 2,
+) -> tuple[Path, Path, int, list[dict]]:
+    quality_json, quality_md, quality_issue_count = write_quality_report(work, translations_path)
+    for _ in range(max_repair_passes):
+        blockers = blocking_quality_issues(quality_json)
+        if not blockers:
+            return quality_json, quality_md, quality_issue_count, []
+        changed = repair_translation_inventory(work, translations_path)
+        if not changed:
+            return quality_json, quality_md, quality_issue_count, blockers
+        log(f"Quality auto repair: normalized {changed} translated segment(s)")
+        cmd_apply(argparse.Namespace(work=str(work), translations=str(translations_path)))
+        quality_json, quality_md, quality_issue_count = write_quality_report(work, translations_path)
+    return quality_json, quality_md, quality_issue_count, blocking_quality_issues(quality_json)
+
+
 DOC2X_API_KEY_ENV = "DOC2X_API_KEY"
 
 
@@ -756,7 +830,7 @@ def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str 
         (
             "bad_reference_key",
             "error",
-            re.compile(r"\\(?:cite|citep|citet|Cref|cref|ref|eqref|pageref|nameref)\{(?:\s*|\.\.\.)\}"),
+            bad_reference_command_pattern(),
             "恢复原始引用 key，不能保留空引用或省略号引用。",
         ),
         (
@@ -768,17 +842,23 @@ def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str 
         (
             "double_escaped_reference",
             "error",
-            re.compile(r"\\\\(?:Cref|cref|ref|eqref|pageref|nameref|cite|citep|citet)\{"),
+            re.compile(rf"\\\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*\{{"),
             "引用命令不应被写成双反斜杠；应恢复为单个反斜杠。",
         ),
         (
             "malformed_reference_command",
             "error",
             re.compile(
-                r"\\(?:cite|citep|citet|Cref|cref|ref|eqref|pageref|nameref)\s*"
-                r"\\(?:cite|citep|citet|Cref|cref|ref|eqref|pageref|nameref)\{"
+                rf"\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*\s*"
+                rf"\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*\{{"
             ),
             "引用命令被重复拼接；应保留一个引用命令并恢复正确 key。",
+        ),
+        (
+            "latex_control_word_split",
+            "error",
+            re.compile(r"\\item\s+sep\s*-?\d"),
+            "LaTeX 控制词被拆开；应恢复为 \\itemsep。",
         ),
         (
             "markdown_artifact",
@@ -798,6 +878,19 @@ def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str 
                 segment_id=segment_id,
                 snippet=snippet_at(text, match.start()),
                 suggestion=suggestion,
+            )
+    for start, _end, command in iter_ref_like_commands(text):
+        argument = reference_command_argument(command)
+        if "\\" in argument or "\n" in argument or "{" in argument or "}" in argument:
+            add_quality_issue(
+                issues,
+                kind="malformed_reference_key",
+                severity="error",
+                source=source,
+                line=line_number_at(text, start) if source.endswith(".tex") else None,
+                segment_id=segment_id,
+                snippet=snippet_at(text, start),
+                suggestion="引用 key 中不应包含正文、嵌套命令或换行；应恢复原始引用 key。",
             )
 
     for line_no, line in enumerate(text.splitlines(), 1):
@@ -1122,7 +1215,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         translations_for_apply = work_dir / CHINESE_REVIEWED_TRANSLATIONS_NAME
     cmd_apply(argparse.Namespace(work=str(work_dir), translations=str(translations_for_apply)))
-    quality_json, quality_md, quality_issue_count = write_quality_report(work_dir, translations_for_apply)
+    quality_json, quality_md, quality_issue_count, quality_blockers = write_quality_report_with_repair(
+        work_dir,
+        translations_for_apply,
+    )
     log_path_hint("Quality report JSON", quality_json)
     log_path_hint("Quality report Markdown", quality_md)
     summary_path = output_dir / "run_summary.json"
@@ -1141,6 +1237,28 @@ def cmd_run(args: argparse.Namespace) -> None:
         quality_issue_count=quality_issue_count,
         vision_pack_note="vision_pack is generated after a successful compile",
     )
+    if quality_blockers:
+        for issue in quality_blockers[:20]:
+            location = issue.get("line") or issue.get("segment_id") or issue.get("source") or "unknown"
+            print(f"quality error: {issue.get('kind')} at {location}: {issue.get('snippet', '')}", file=sys.stderr)
+        write_run_summary(
+            summary_path,
+            status="quality_failed",
+            error=f"quality check found {len(quality_blockers)} blocking issue(s); inspect {quality_md}",
+            method=method,
+            source=source,
+            project=project,
+            work=work_dir,
+            pdf=None,
+            english_tex=work_dir / f"{ENGLISH_MERGED_BASENAME}.tex",
+            tex=work_dir / f"{CHINESE_MERGED_BASENAME}.tex",
+            quality_report_json=quality_json,
+            quality_report_md=quality_md,
+            quality_issue_count=quality_issue_count,
+            vision_pack_note="vision_pack was not generated because quality checks failed before compile",
+        )
+        log_path_hint("Run summary", summary_path)
+        die("blocking translation quality issues remain after automatic repair")
     try:
         cmd_compile(
             argparse.Namespace(
@@ -1152,6 +1270,22 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
     except SystemExit:
         work_pdf = work_dir / f"{CHINESE_MERGED_BASENAME}.pdf"
+        diagnostic_vision_pack: Path | None = None
+        diagnostic_vision_note = "vision_pack was not generated because compile failed"
+        if work_pdf.is_file() and source_pdf_for_pack is not None and source_pdf_for_pack.is_file():
+            try:
+                diagnostic_vision_pack = prepare_vision_review_pack(
+                    source_pdf=source_pdf_for_pack,
+                    translated_pdf=work_pdf,
+                    out_dir=output_dir / "vision_pack",
+                    pages_spec=args.vision_pages,
+                    tex_path=work_dir / f"{CHINESE_MERGED_BASENAME}.tex",
+                )
+                diagnostic_vision_note = "diagnostic vision_pack was generated from the PDF produced before compile errors"
+                log_path_hint("Vision review pack", diagnostic_vision_pack)
+                log_path_hint("Vision review manifest", diagnostic_vision_pack / "manifest.json")
+            except Exception as exc:
+                diagnostic_vision_note = f"vision_pack was not generated after compile errors: {exc}"
         write_run_summary(
             summary_path,
             status="compile_failed",
@@ -1166,7 +1300,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             quality_report_json=quality_json,
             quality_report_md=quality_md,
             quality_issue_count=quality_issue_count,
-            vision_pack_note="vision_pack was not generated because compile failed",
+            vision_pack=diagnostic_vision_pack,
+            vision_pack_note=diagnostic_vision_note,
         )
         log_path_hint("Run summary", summary_path)
         raise

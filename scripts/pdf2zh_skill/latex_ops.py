@@ -102,6 +102,7 @@ def normalize_problem_unicode(text: str) -> str:
 
 def sanitize_latex_source(text: str) -> str:
     text = normalize_problem_unicode(text)
+    text = normalize_escaped_cjk_punctuation(text)
     # arXiv sources often include pdfTeX-only directives. They break the
     # LuaLaTeX/XeLaTeX path used for Chinese output and are unnecessary here.
     text = re.sub(r"(?m)^[ \t]*\\pdfoutput[ \t]*=[ \t]*1[ \t]*(?:%.*)?\n?", "", text, count=1)
@@ -117,17 +118,36 @@ def sanitize_latex_source(text: str) -> str:
     text = normalize_caption_prefixes(text)
     text = strip_markdown_emphasis_artifacts(text)
     text = normalize_reference_command_arguments(text)
+    text = normalize_control_word_cjk_boundaries(text)
+    text = normalize_missing_list_items(text)
     text = normalize_font_fallback_blocks(text)
     text = normalize_text_symbol_commands(text)
     text = normalize_math_font_fragments(text)
     text = normalize_visual_primitive_token_names(text)
+    text = normalize_slash_catcode_jobname_probe(text)
     text = normalize_item_syntax(text)
     text = normalize_reference_item_brackets(text)
     text = normalize_pandoc_longtable_groups(text)
     text = wrap_pandoc_figure_blocks(text)
     text = escape_unescaped_text_underscores(text)
     text = normalize_reference_command_arguments(text)
+    text = normalize_control_word_cjk_boundaries(text)
+    text = normalize_missing_list_items(text)
     return text
+
+
+def normalize_escaped_cjk_punctuation(text: str) -> str:
+    return re.sub(r"\\([（）【】《》，。；：、])", r"\1", text)
+
+
+def normalize_slash_catcode_jobname_probe(text: str) -> str:
+    pattern = re.compile(
+        r"\{\s*\\catcode/=0\s+\\catcode\\\\=12/gdef/mkillslash\\#1\{#1\}\}\s*"
+        r"\\edef\\jobnametmp\{\\expandafter\\string\\csname\s+([^{}\\]+?)\s*\\endcsname\}\s*"
+        r"\\edef\\jobnameapx\{\\expandafter\\mkillslash\\jobnametmp\}",
+        re.S,
+    )
+    return pattern.sub(lambda match: rf"\edef\jobnameapx{{{match.group(1).strip()}}}", text)
 
 def normalize_frontmatter_content(text: str) -> str:
     replacements = {
@@ -180,8 +200,8 @@ def normalize_item_syntax(text: str) -> str:
     # Some translation models occasionally emit list items without whitespace
     # between \\item and the following text (e.g. "\\itemfoo"), which becomes
     # a single undefined control sequence. Add a space so LaTeX parses
-    # "\item" correctly.
-    return re.sub(r"\\item(?=\S)", r"\\item ", text)
+    # "\item" correctly. Do not split control words such as "\itemsep".
+    return re.sub(r"\\item(?![A-Za-z@])(?=\S)", r"\\item ", text)
 
 
 def normalize_linebreak_dimension_commands(text: str) -> str:
@@ -205,6 +225,29 @@ def normalize_section_reference_phrases(text: str) -> str:
 def normalize_double_escaped_reference_commands(text: str) -> str:
     commands = r"(?:Cref|cref|ref|eqref|pageref|nameref|cite|citep|citet|citealp|citealt|citeauthor|citeyear)"
     return re.sub(rf"\\\\({commands})\{{", r"\\\1{", text)
+
+
+def normalize_control_word_cjk_boundaries(text: str) -> str:
+    # TeX keeps reading letters after a control word. In CJK documents some
+    # engines/packages make Han characters letter-like enough that "\method中"
+    # is parsed as an undefined "\method中" instead of "\method" + "中".
+    return re.sub(r"\\([A-Za-z@]+)(?=[\u4e00-\u9fff])", r"\\\1{}", text)
+
+
+def normalize_missing_list_items(text: str) -> str:
+    pattern = re.compile(r"(\\begin\{(itemize|enumerate)\}(?:\[[^\]]*\])?\s*)(.*?)(\\end\{\2\})", re.S)
+
+    def repl(match: re.Match) -> str:
+        prefix, _env, body, suffix = match.groups()
+        stripped = body.lstrip()
+        if not stripped or stripped.startswith(r"\item"):
+            return match.group(0)
+        if stripped.startswith("\\"):
+            return match.group(0)
+        leading = body[: len(body) - len(stripped)]
+        return prefix + leading + r"\item " + stripped + suffix
+
+    return pattern.sub(repl, text)
 
 
 def normalize_xcolor_package_loads(text: str) -> str:
@@ -347,6 +390,47 @@ REF_LIKE_COMMANDS = (
 
 def ref_like_command_pattern() -> str:
     return rf"\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*" + r"\{[^{}]*\}"
+
+
+def ref_like_command_start_pattern() -> re.Pattern:
+    return re.compile(rf"\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*\{{", re.S)
+
+
+def iter_ref_like_commands(text: str) -> Iterator[tuple[int, int, str]]:
+    pattern = ref_like_command_start_pattern()
+    pos = 0
+    while True:
+        match = pattern.search(text, pos)
+        if not match:
+            return
+        end = matching_brace(text, match.end() - 1)
+        if end is None:
+            yield match.start(), len(text), text[match.start() :]
+            return
+        yield match.start(), end + 1, text[match.start() : end + 1]
+        pos = end + 1
+
+
+def reference_command_argument(command: str) -> str:
+    open_index = command.find("{")
+    if open_index < 0:
+        return ""
+    end = matching_brace(command, open_index)
+    if end is None:
+        return command[open_index + 1 :]
+    return command[open_index + 1 : end]
+
+
+def malformed_reference_argument(argument: str) -> bool:
+    stripped = argument.strip()
+    return (
+        not stripped
+        or stripped == "..."
+        or "\\" in stripped
+        or "\n" in stripped
+        or "{" in stripped
+        or "}" in stripped
+    )
 
 
 def normalize_reference_command_arguments(text: str) -> str:
@@ -606,8 +690,8 @@ def protected_spans(text: str) -> list[tuple[int, int]]:
     add(r"\\(?:begin|end)\{[^}]+\}")
     add(r"\\(?:newpage|clearpage|appendix|tableofcontents)\b")
 
-    # Reopen abstract and captions after broad environment protection.
-    reopened: list[tuple[int, int]] = []
+    # Reopen selected human-facing text after broad environment protection.
+    reopened: list[tuple[int, int]] = translatable_frontmatter_spans(text)
     for pattern in [r"\\caption\{", r"\\abstract\{"]:
         for match in re.finditer(pattern, text):
             end = matching_brace(text, match.end() - 1)
@@ -634,6 +718,26 @@ def protected_spans(text: str) -> list[tuple[int, int]]:
         if cursor < end:
             result.append((cursor, end))
     return normalize_spans(result)
+
+
+def translatable_frontmatter_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for command in ["title", "subtitle"]:
+        pattern = re.compile(rf"\\{command}\*?(?:\[[^\]]*\])?\{{", re.S)
+        for match in pattern.finditer(text):
+            end = matching_brace(text, match.end() - 1)
+            if end is not None:
+                spans.append((match.end(), end))
+
+    macro_pattern = re.compile(
+        r"\\(?:re)?newcommand\*?\s*\{\\[^{}]*title[^{}]*\}\s*(?:\[[^\]]*\]\s*){0,2}\{",
+        re.I | re.S,
+    )
+    for match in macro_pattern.finditer(text):
+        end = matching_brace(text, match.end() - 1)
+        if end is not None:
+            spans.append((match.end(), end))
+    return spans
 
 def short_generic_environment_spans(text: str, limit_n_lines: int) -> list[tuple[int, int]]:
     whitelist = {
@@ -695,6 +799,7 @@ def mask_latex_blocks_for_translation(text: str) -> tuple[str, dict[str, str]]:
         r"\\(?:begin|end)\{[^}]+\}",
         ref_like_command_pattern(),
         r"\\(?:url|href|includegraphics)\*?(?:\[[^\]]*\])?\{[^}]*\}",
+        r"\\[A-Za-z@]+\*?",
     ]
     masked = text
     for pattern in patterns:
@@ -727,6 +832,7 @@ def split_nodes(text: str) -> list[Node]:
         cursor = end
     if cursor < len(text):
         raw.append(Node(TRANSLATE, text[cursor:]))
+    raw = attach_inline_reference_nodes(raw)
 
     nodes: list[Node] = []
     segment_index = 0
@@ -743,6 +849,20 @@ def split_nodes(text: str) -> list[Node]:
         else:
             nodes.append(node)
     return coalesce_preserve(nodes)
+
+
+def attach_inline_reference_nodes(nodes: list[Node]) -> list[Node]:
+    out: list[Node] = []
+    for node in nodes:
+        if node.kind == PRESERVE and is_inline_reference_node(node.text) and out and out[-1].kind == TRANSLATE:
+            out[-1].text += node.text
+            continue
+        out.append(node)
+    return out
+
+
+def is_inline_reference_node(text: str) -> bool:
+    return bool(re.fullmatch(ref_like_command_pattern(), text.strip(), flags=re.S))
 
 def should_translate(text: str) -> bool:
     stripped = text.strip()
@@ -830,6 +950,7 @@ def coalesce_preserve(nodes: list[Node]) -> list[Node]:
 def fix_translation(translated: str, original: str) -> str:
     translated = strip_markdown_emphasis_artifacts(translated)
     translated = normalize_reference_command_arguments(translated)
+    translated = restore_reference_command_inventory(translated, original)
     translated = re.sub(r"(?<!\\)%", r"\\%", translated)
     translated = re.sub(r"\\([a-zA-Z]{2,20})\s+\{", r"\\\1{", translated)
     translated = re.sub(r"\\([a-zA-Z]{2,20})\{([^}]*)\}", normalize_command_argument_punctuation, translated)
@@ -840,7 +961,66 @@ def fix_translation(translated: str, original: str) -> str:
     if brace_balance(original) != brace_balance(translated):
         translated = join_most_matching_braces(translated, original)
     translated = normalize_reference_command_arguments(translated)
+    translated = restore_reference_command_inventory(translated, original)
     return translated
+
+
+def reference_commands(text: str) -> list[str]:
+    return [command for _start, _end, command in iter_ref_like_commands(text)]
+
+
+def reference_command_name(command: str) -> str:
+    match = re.match(r"\\([A-Za-z@]+)", command)
+    return match.group(1) if match else ""
+
+
+def bad_reference_command_pattern() -> re.Pattern:
+    return re.compile(
+        rf"\\(?:{REF_LIKE_COMMANDS})\*?(?:\[[^\]]*\])*\{{(?:\s*|\.\.\.)\}}"
+    )
+
+
+def restore_reference_command_inventory(translated: str, original: str) -> str:
+    original_refs = reference_commands(original)
+    if not original_refs:
+        return replace_ref_like_commands(translated, lambda _command: "")
+
+    remaining = original_refs.copy()
+
+    def pop_matching(name: str) -> str | None:
+        for index, command in enumerate(remaining):
+            if reference_command_name(command) == name:
+                return remaining.pop(index)
+        return None
+
+    def pop_first() -> str | None:
+        return remaining.pop(0) if remaining else None
+
+    def replace(command: str) -> str:
+        argument = reference_command_argument(command)
+        is_bad = malformed_reference_argument(argument)
+        if command in remaining and not is_bad:
+            remaining.remove(command)
+            return command
+        matching = pop_matching(reference_command_name(command))
+        if matching:
+            return matching
+        if is_bad:
+            return pop_first() or ""
+        return ""
+
+    return replace_ref_like_commands(translated, replace)
+
+
+def replace_ref_like_commands(text: str, replace: Callable[[str], str]) -> str:
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, command in iter_ref_like_commands(text):
+        pieces.append(text[cursor:start])
+        pieces.append(replace(command))
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 def normalize_command_argument_punctuation(match: re.Match) -> str:
     command = match.group(1)
