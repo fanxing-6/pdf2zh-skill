@@ -28,7 +28,7 @@ Use this repository as the update source for the skill:
 
 ## Output layout
 
-Each `run` creates a unique task folder under the system temp directory:
+Each `run` creates a unique task folder under a persistent output root. By default this is `PDF2ZH_SKILL_HOME/runs`, or `~/pdf2zh-skill/runs` when `PDF2ZH_SKILL_HOME` is not set. Set `PDF2ZH_SKILL_OUTPUT_DIR` to choose another durable location; `PDF2ZH_SKILL_TMPDIR` remains as a legacy alias for older setups.
 
 ```text
 pdf2zh-skill/YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
@@ -52,6 +52,8 @@ Internal working files remain stable under `zh/`:
 - `consistency_report_中文.json`
 - `quality_report_中文.json`
 - `quality_report_中文.md`
+
+When a local `--pdf` or `--source-pdf` points at an upload cache or other temporary path, the pipeline copies it into `source/` inside the task folder before conversion and visual review. Completed runs therefore do not depend on the original temp path still existing after a restart.
 
 ## Quick start
 

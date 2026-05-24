@@ -39,6 +39,24 @@ def safe_output_artifact_base(name: str) -> str:
     return cleaned or "output"
 
 
+def persist_source_pdf(pdf: Path, output_dir: Path) -> Path:
+    if not pdf.is_file():
+        die(f"source PDF not found: {pdf}")
+    source_dir = output_dir / "source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = safe_output_artifact_base(pdf.name)
+    if not safe_name.lower().endswith(".pdf"):
+        safe_name = f"{safe_name}.pdf"
+    target = source_dir / safe_name
+    try:
+        same_file = target.exists() and pdf.samefile(target)
+    except OSError:
+        same_file = False
+    if not same_file:
+        shutil.copy2(pdf, target)
+    return target.resolve()
+
+
 def latex_to_plain_filename(value: str) -> str:
     text = value.replace("\\\\", " ")
     for _ in range(4):
@@ -1051,6 +1069,7 @@ def write_run_summary(
         "quality_report_md": str(quality_report_md),
         "quality_issue_count": quality_issue_count,
         "skill_home": str(skill_home_dir()),
+        "output_root": str(skill_output_dir()),
         "tmp_root": str(skill_tmp_dir()),
     }
     if error:
@@ -1083,6 +1102,7 @@ def write_run_summary(
             "quality_report_json_windows": windows_visible_path(quality_report_json),
             "quality_report_md_windows": windows_visible_path(quality_report_md),
             "skill_home_windows": windows_visible_path(skill_home_dir()),
+            "output_root_windows": windows_visible_path(skill_output_dir()),
             "tmp_root_windows": windows_visible_path(skill_tmp_dir()),
             "vision_pack_windows": windows_visible_path(vision_pack) if vision_pack else None,
         }
@@ -1101,7 +1121,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     work_dir = output_dir / "zh"
     source_pdf_for_pack: Path | None = None
     log_path_hint("Skill home", skill_home_dir())
-    log_path_hint("Task tmp root", skill_tmp_dir())
+    log_path_hint("Task output root", skill_output_dir())
     log_path_hint("Task output dir", output_dir)
 
     if args.project:
@@ -1109,7 +1129,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         if not project.is_dir():
             die(f"project folder not found: {project}")
         if args.source_pdf:
-            source_pdf_for_pack = Path(args.source_pdf).expanduser().resolve()
+            source_pdf_for_pack = persist_source_pdf(Path(args.source_pdf).expanduser().resolve(), output_dir)
         method = "project"
         source = str(project)
     else:
@@ -1137,7 +1157,9 @@ def cmd_run(args: argparse.Namespace) -> None:
                     source = args.url
             if method != "arxiv-src" and pdf_path is None:
                 method = choose_conversion_method(args.method)
-                pdf_path = Path(args.pdf).resolve() if args.pdf else None
+                pdf_path = persist_source_pdf(Path(args.pdf).expanduser().resolve(), output_dir) if args.pdf else None
+                if pdf_path is not None:
+                    source = str(pdf_path)
             if method != "arxiv-src" and args.url and pdf_path is None:
                 pdf_path = download_remote_pdf(args.url, convert_dir / "remote_source")
             if method != "arxiv-src":
@@ -1391,8 +1413,9 @@ def cmd_check_config(args: argparse.Namespace) -> None:
 
 def cmd_paths(_: argparse.Namespace) -> None:
     log_path_hint("Skill home", skill_home_dir())
+    log_path_hint("Task output root", skill_output_dir())
     log_path_hint("Task tmp root", skill_tmp_dir())
-    print(skill_tmp_dir())
+    print(skill_output_dir())
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PDF -> LaTeX -> Chinese PDF pipeline helper")
@@ -1503,7 +1526,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--url", help="Remote PDF URL; the file will be downloaded locally before conversion")
     run_cmd.add_argument("--project", help="Existing TeX project; skips conversion")
     run_cmd.add_argument("--source-pdf", help="Original source PDF path; used to generate the visual review pack when using --project")
-    run_cmd.add_argument("--output-dir", help="default: create a fresh task folder under PDF2ZH_SKILL_TMPDIR")
+    run_cmd.add_argument("--output-dir", help="default: create a fresh task folder under PDF2ZH_SKILL_OUTPUT_DIR or PDF2ZH_SKILL_HOME/runs")
     run_cmd.add_argument("--method", choices=["auto", "doc2x", "mathpix", "text"], default="auto")
     run_cmd.add_argument("--vision-pages", default="1-3", help="page spec for vision compare pack, e.g. 1-3,5")
     run_cmd.add_argument("--translation-api-key", help="translation API key; prefer PDF2ZH_TRANSLATION_API_KEY in .env")
@@ -1529,7 +1552,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--force-translate", action="store_true")
     run_cmd.set_defaults(func=cmd_run)
 
-    paths_cmd = sub.add_parser("paths", help="show resolved runtime and tmp directories")
+    paths_cmd = sub.add_parser("paths", help="show resolved runtime, output, and tmp directories")
     paths_cmd.set_defaults(func=cmd_paths)
     return parser
 

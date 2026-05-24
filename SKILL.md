@@ -37,7 +37,9 @@ python scripts/pdf2zh_pipeline.py check-config
 
 ## 输出目录
 
-默认输出根目录为系统临时目录下的 `pdf2zh-skill/` 子目录，可通过 `PDF2ZH_SKILL_TMPDIR` 覆盖。
+默认输出根目录必须是可持久目录，而不是系统临时目录。未显式指定时，使用 `PDF2ZH_SKILL_HOME/runs/`；若 `PDF2ZH_SKILL_HOME` 也未设置，则使用用户主目录下的 `pdf2zh-skill/runs/`。需要自定义交付位置时，优先设置 `PDF2ZH_SKILL_OUTPUT_DIR`；旧的 `PDF2ZH_SKILL_TMPDIR` 仅作为兼容别名保留，不应在新配置中优先使用。
+
+如果用户给出的本地 PDF 或 `--source-pdf` 位于上传缓存、系统临时目录、浏览器下载临时目录等易丢失位置，`run` 必须先把源 PDF 复制到本次任务目录的 `source/` 子目录，并在后续 DOC2X/Mathpix/text 转换、视觉对照包和 `run_summary.json` 中使用这份持久副本。这样即使 Codex、WSL 或系统重启，最终 PDF、TeX、视觉对照材料和源 PDF 副本仍在同一个任务目录内。
 
 每次 `run` 都创建独立任务目录：
 
@@ -48,6 +50,7 @@ YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
 同一文件多次运行不会互相覆盖。任务目录固定包含：
 
 - `convert/`：PDF 解析或 arXiv 源码获取结果
+- `source/`：本地输入 PDF 或 `--source-pdf` 的持久副本；URL 下载和 arXiv 源码流程可按转换结果保存在 `convert/`
 - `zh/`：内部工作目录
 - `vision_pack/`：原 PDF 与中文 PDF 的页面对照图，若缺少源 PDF 则在 `run_summary.json` 中记录跳过原因
 - `run_summary.json`：运行摘要、主要产物路径和 Windows 可见路径

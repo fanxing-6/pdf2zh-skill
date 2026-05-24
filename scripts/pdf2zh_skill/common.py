@@ -143,6 +143,15 @@ def skill_tmp_dir() -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
 
+def skill_output_dir() -> Path:
+    override = os.environ.get("PDF2ZH_SKILL_OUTPUT_DIR") or os.environ.get("PDF2ZH_SKILL_TMPDIR")
+    if override:
+        path = Path(override).expanduser()
+    else:
+        path = skill_home_dir() / "runs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
+
 def slugify(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
     return slug or "task"
@@ -160,7 +169,7 @@ def default_task_output_dir(source_hint: str) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     name = source_hint_slug(source_hint)
     digest = hashlib.sha1(f"{source_hint}|{time.time_ns()}|{os.getpid()}".encode("utf-8", errors="ignore")).hexdigest()[:8]
-    return (skill_tmp_dir() / f"{stamp}-{name}-{digest}").resolve()
+    return (skill_output_dir() / f"{stamp}-{name}-{digest}").resolve()
 
 def is_wsl() -> bool:
     if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
