@@ -31,11 +31,11 @@ BLOCKING_QUALITY_KINDS = {
 }
 
 
-def safe_output_artifact_base(name: str) -> str:
+def safe_output_artifact_base(name: str, max_len: int = 120) -> str:
     cleaned = re.sub(r"\s+", " ", name)
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', "_", cleaned).strip().rstrip(".")
-    if len(cleaned) > 120:
-        cleaned = cleaned[:120].rstrip(" ._-")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip(" ._-")
     return cleaned or "output"
 
 
@@ -44,7 +44,7 @@ def persist_source_pdf(pdf: Path, output_dir: Path) -> Path:
         die(f"source PDF not found: {pdf}")
     source_dir = output_dir / "source"
     source_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = safe_output_artifact_base(pdf.name)
+    safe_name = safe_output_artifact_base(pdf.name, max_len=80)
     if not safe_name.lower().endswith(".pdf"):
         safe_name = f"{safe_name}.pdf"
     target = source_dir / safe_name
@@ -912,6 +912,17 @@ def collect_quality_issues_from_text(text: str, *, source: str, segment_id: str 
             )
 
     for line_no, line in enumerate(text.splitlines(), 1):
+        if re.match(r"^[ \t]{0,3}#{1,6}[ \t]+\S", line):
+            add_quality_issue(
+                issues,
+                kind="markdown_heading_artifact",
+                severity="error",
+                source=source,
+                line=line_no if source.endswith(".tex") else None,
+                segment_id=segment_id,
+                snippet=compact_whitespace(line),
+                suggestion="模型输出了 Markdown 标题；应改成 \\section*、\\subsection* 或普通 LaTeX 文本。",
+            )
         if re.search(r"\S.{0,120}\\(?:section|subsection|subsubsection)\{", line):
             add_quality_issue(
                 issues,
@@ -1109,7 +1120,149 @@ def write_run_summary(
         summary.update({k: v for k, v in windows_fields.items() if v})
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
+def batch_task_output_dir(root: Path, source_hint: str) -> Path:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = source_hint_slug(source_hint)
+    if len(name) > 48:
+        name = name[:48].rstrip("-._")
+    digest = hashlib.sha1(f"{source_hint}|{time.time_ns()}|{os.getpid()}".encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return (root / f"{stamp}-{name}-{digest}").resolve()
+
+
+def iter_pdf_dir(pdf_dir: Path, recursive: bool) -> list[Path]:
+    if not pdf_dir.is_dir():
+        die(f"PDF folder not found: {pdf_dir}")
+    iterator = pdf_dir.rglob("*") if recursive else pdf_dir.iterdir()
+    return sorted(path.resolve() for path in iterator if path.is_file() and path.suffix.lower() == ".pdf")
+
+
+def default_mirror_pdf_dir(pdf_dir: Path) -> Path:
+    return pdf_dir.with_name(f"{pdf_dir.name}_zh")
+
+
+def exported_pdf_from_summary(output_dir: Path) -> Path | None:
+    summary_path = output_dir / "run_summary.json"
+    if not summary_path.is_file():
+        return None
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    pdf = summary.get("pdf")
+    if not pdf:
+        return None
+    path = Path(pdf).expanduser()
+    if not path.is_absolute():
+        path = output_dir / path
+    return path.resolve()
+
+
+def cmd_run_pdf_dir(args: argparse.Namespace) -> None:
+    if args.pdf or args.url or args.project:
+        die("--pdf-dir cannot be combined with --pdf, --url, or --project")
+    pdf_dir = Path(args.pdf_dir).expanduser().resolve()
+    pdfs = iter_pdf_dir(pdf_dir, args.recursive)
+    if not pdfs:
+        die(f"no PDF files found in {pdf_dir}")
+
+    batch_root = Path(args.output_dir).expanduser().resolve() if args.output_dir else default_task_output_dir(str(pdf_dir))
+    mirror_dir = (
+        Path(args.mirror_output_dir).expanduser().resolve()
+        if args.mirror_output_dir
+        else default_mirror_pdf_dir(pdf_dir).resolve()
+    )
+    batch_root.mkdir(parents=True, exist_ok=True)
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    log_path_hint("Batch output dir", batch_root)
+    log_path_hint("Translated PDF mirror dir", mirror_dir)
+    log(f"Batch: found {len(pdfs)} PDF file(s)")
+
+    results: list[dict] = []
+    failures = 0
+    skipped = 0
+    for index, pdf in enumerate(pdfs, start=1):
+        log(f"Batch: [{index}/{len(pdfs)}] {pdf}")
+        relative_pdf = pdf.relative_to(pdf_dir)
+        mirrored_pdf = mirror_dir / relative_pdf
+        if mirrored_pdf.is_file() and not args.force_translate:
+            skipped += 1
+            log_path_hint("Batch: skipping existing translated PDF", mirrored_pdf)
+            results.append(
+                {
+                    "pdf": str(pdf),
+                    "output_dir": None,
+                    "status": "skipped",
+                    "exit_code": 0,
+                    "error": None,
+                    "mirrored_pdf": str(mirrored_pdf),
+                }
+            )
+            continue
+
+        child_args = argparse.Namespace(**vars(args))
+        child_args.pdf_dir = None
+        child_args.recursive = False
+        child_args.pdf = str(pdf)
+        child_args.url = None
+        child_args.project = None
+        child_args.source_pdf = None
+        child_args.output_dir = str(batch_task_output_dir(batch_root, str(pdf)))
+        try:
+            cmd_run_one(child_args)
+            exported_pdf = exported_pdf_from_summary(Path(child_args.output_dir))
+            if exported_pdf is None or not exported_pdf.is_file():
+                die(f"successful run did not produce a translated PDF under {child_args.output_dir}")
+            mirrored_pdf.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(exported_pdf, mirrored_pdf)
+            log_path_hint("Mirrored Chinese PDF", mirrored_pdf)
+            status = "ok"
+            code = 0
+        except SystemExit as exc:
+            failures += 1
+            status = "failed"
+            code = exc.code if isinstance(exc.code, int) else 1
+            log(f"Batch: failed {pdf} (exit {code})")
+        except Exception as exc:
+            failures += 1
+            status = "failed"
+            code = 1
+            log(f"Batch: failed {pdf} ({type(exc).__name__}: {exc})")
+        results.append(
+            {
+                "pdf": str(pdf),
+                "output_dir": child_args.output_dir,
+                "status": status,
+                "exit_code": code,
+                "error": None if status == "ok" else "see run output above",
+                "mirrored_pdf": str(mirrored_pdf) if mirrored_pdf else None,
+            }
+        )
+
+    summary = {
+        "pdf_dir": str(pdf_dir),
+        "mirror_output_dir": str(mirror_dir),
+        "recursive": args.recursive,
+        "total": len(pdfs),
+        "succeeded": len(pdfs) - failures,
+        "skipped": skipped,
+        "failed": failures,
+        "results": results,
+    }
+    summary_path = batch_root / "batch_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    log_path_hint("Batch summary", summary_path)
+    if failures:
+        die(f"batch completed with {failures} failed run(s); inspect {summary_path}")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
+    if getattr(args, "pdf_dir", None):
+        cmd_run_pdf_dir(args)
+        return
+    cmd_run_one(args)
+
+
+def cmd_run_one(args: argparse.Namespace) -> None:
     require_run_translation_config(args)
     if should_preflight_doc2x_for_run(args) and not config_present(effective_doc2x_api_key(args.doc2x_api_key)):
         die(doc2x_config_help())
@@ -1523,6 +1676,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_cmd = sub.add_parser("run", help="run the whole PDF/project -> Chinese PDF pipeline")
     run_cmd.add_argument("--pdf")
+    run_cmd.add_argument("--pdf-dir", help="Folder of PDF files to process sequentially; each PDF gets its own run folder")
+    run_cmd.add_argument("--recursive", action="store_true", help="With --pdf-dir, include PDF files from nested folders")
+    run_cmd.add_argument("--mirror-output-dir", help="With --pdf-dir, copy translated PDFs here while preserving relative paths; default: <pdf-dir>_zh")
     run_cmd.add_argument("--url", help="Remote PDF URL; the file will be downloaded locally before conversion")
     run_cmd.add_argument("--project", help="Existing TeX project; skips conversion")
     run_cmd.add_argument("--source-pdf", help="Original source PDF path; used to generate the visual review pack when using --project")
