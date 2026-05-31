@@ -117,6 +117,7 @@ def sanitize_latex_source(text: str) -> str:
     text = normalize_reference_heading(text)
     text = normalize_caption_prefixes(text)
     text = strip_markdown_emphasis_artifacts(text)
+    text = normalize_markdown_heading_artifacts(text)
     text = normalize_reference_command_arguments(text)
     text = normalize_control_word_cjk_boundaries(text)
     text = normalize_missing_list_items(text)
@@ -291,6 +292,22 @@ def strip_markdown_emphasis_artifacts(text: str) -> str:
     text = re.sub(r"(?<!\\)__([^\n_][^\n]*?[^\n_])(?<!\\)__", r"\1", text)
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)
     return text
+
+
+def normalize_markdown_heading_artifacts(text: str) -> str:
+    # Chat models occasionally return Markdown headings for table titles or
+    # extracted section labels. Bare # is invalid in LaTeX, so convert only
+    # standalone heading lines and leave macro parameters like #1 untouched.
+    def replace(match: re.Match[str]) -> str:
+        leading, markers, title = match.groups()
+        title = title.strip()
+        title = re.sub(r"\s+#+\s*$", "", title).strip()
+        if not title:
+            return match.group(0)
+        command = "section" if len(markers) == 1 else "subsection" if len(markers) == 2 else "subsubsection"
+        return f"{leading}\\{command}*{{{title}}}"
+
+    return re.sub(r"(?m)^([ \t]{0,3})(#{1,6})[ \t]+(.+?)\s*$", replace, text)
 
 
 def looks_like_visual_demo_ocr_block(text: str) -> bool:
@@ -949,6 +966,7 @@ def coalesce_preserve(nodes: list[Node]) -> list[Node]:
 
 def fix_translation(translated: str, original: str) -> str:
     translated = strip_markdown_emphasis_artifacts(translated)
+    translated = normalize_markdown_heading_artifacts(translated)
     translated = normalize_reference_command_arguments(translated)
     translated = restore_reference_command_inventory(translated, original)
     translated = re.sub(r"(?<!\\)%", r"\\%", translated)

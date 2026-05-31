@@ -73,12 +73,16 @@ YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
 
 普通 PDF 的交付文件使用原文件名 stem。arXiv URL 的交付文件优先使用论文标题；标题无法解析时回退到 arXiv ID。
 
+批量处理目录时可使用 `--pdf-dir`，每个 PDF 仍创建独立任务目录；成功生成的中文 PDF 会额外按源目录相对路径镜像到 `<源目录名>_zh/`，可用 `--mirror-output-dir` 指定其他交付目录。若镜像目录中同相对路径 PDF 已存在，默认跳过该文件；需要重跑时显式传 `--force-translate`。
+
 ## 主流程
 
 推荐只使用 `run`：
 
 ```bash
 python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --doc2x-model v2 --workers 50
+
+python scripts/pdf2zh_pipeline.py run --pdf-dir papers --recursive --method doc2x --workers 50 --compiler xelatex
 
 python scripts/pdf2zh_pipeline.py run --url https://arxiv.org/abs/0000.00000 --workers 50
 
@@ -134,6 +138,7 @@ python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf 
 - 未转义文本下划线
 - `\item` 与正文粘连
 - Markdown 加粗、下划线加粗和单反引号残留
+- Markdown 标题残留；行首 `#`、`##`、`###` 会转换为对应的 LaTeX 无编号标题
 - 模型输出原文回声
 
 质量报告中的 error 级问题会先进入自动修复通道；坏引用、占位符泄漏、双反斜杠引用、列表结构破坏和 LaTeX 控制词拆分等问题若修复后仍存在，会阻断编译并在 `run_summary.json` 中记录 `quality_failed`。warning 级问题继续作为模型二次审阅线索，不默认阻断编译。复杂编译错误和版式细节由 Codex 根据日志和视觉对照修复；若编译日志仍有严重错误但已经生成可读 PDF，流程会尽量生成诊断用 `vision_pack/`。

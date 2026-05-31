@@ -116,6 +116,19 @@ def test_econ_compile_normalizers() -> None:
     assert_true(r"\（" not in normalized and r"\）" not in normalized, "escaped CJK punctuation should be unescaped")
 
 
+def test_markdown_heading_artifact_repair() -> None:
+    source = "## 在 Cooking-200 和 MovieLens2k-v2 上的实验结果\n正文。"
+    normalized = sanitize_latex_source(source)
+    assert_true("##" not in normalized, "Markdown heading markers must not remain in final TeX")
+    assert_true(
+        r"\subsection*{在 Cooking-200 和 MovieLens2k-v2 上的实验结果}" in normalized,
+        "Markdown level-2 headings should become unnumbered LaTeX subsections",
+    )
+
+    fixed = fix_translation(source, "Experimental results on Cooking-200 and MovieLens2k-v2.\nText.")
+    assert_true("##" not in fixed, "Markdown heading markers must be repaired in translated segments")
+
+
 def main() -> int:
     tests = [
         test_itemsep_not_split,
@@ -125,6 +138,7 @@ def main() -> int:
         test_identity_frontmatter_is_not_untranslated_warning,
         test_control_word_cjk_and_missing_item_repair,
         test_econ_compile_normalizers,
+        test_markdown_heading_artifact_repair,
     ]
     for test in tests:
         test()

@@ -77,8 +77,16 @@ If translation config is missing, provide an OpenAI-compatible chat completions 
 Then run:
 
 ```bash
-python scripts/pdf2zh_pipeline.py run --pdf paper.pdf --method doc2x --workers 50
+python scripts/pdf2zh_pipeline.py run --pdf test.pdf --method doc2x --workers 50 --compiler xelatex
 ```
+
+For a folder of PDFs, run them sequentially. Full run artifacts still get one output folder per PDF, and translated PDFs are also mirrored into `<source_dir>_zh` with the original relative paths:
+
+```bash
+python scripts/pdf2zh_pipeline.py run --pdf-dir papers --method doc2x --workers 50 --compiler xelatex
+```
+
+For example, `papers/a/b.pdf` is copied to `papers_zh/a/b.pdf` after successful translation. Add `--recursive` to include PDFs in nested folders, or `--mirror-output-dir translated_papers` to choose a different mirror directory. Existing mirrored PDFs are skipped on later batch runs unless `--force-translate` is passed.
 
 For arXiv:
 
