@@ -8,7 +8,7 @@
 
 ![arXiv 2604.13016 before/after](docs/images/arxiv_2604_13016_before_after.png)
 
-Convert academic PDF papers or arXiv/LaTeX sources into Chinese PDF outputs while preserving LaTeX structure as much as practical.
+Convert academic PDF papers or arXiv/LaTeX sources into Chinese PDF outputs and sentence-interleaved English/Chinese bilingual PDF outputs while preserving LaTeX structure as much as practical.
 
 ## Update path
 
@@ -24,11 +24,12 @@ Use this repository as the update source for the skill:
 - Translate with a user-provided OpenAI-compatible chat completions API
 - Build a paper-level glossary and run a consistency review pass
 - Compile `merge_中文.tex` into a Chinese PDF
-- Generate `vision_pack/` and `quality_report_中文.*` for model review and manual repair
+- Compile `merge_中英双语.tex` into a bilingual PDF whose prose alternates English sentence, green Chinese sentence
+- Generate `vision_pack/`, `vision_pack_bilingual/`, and `quality_report_中文.*` for model review and final correction
 
 ## Output layout
 
-Each `run` creates a unique task folder under a persistent output root. By default this is `PDF2ZH_SKILL_HOME/runs`, or `~/pdf2zh-skill/runs` when `PDF2ZH_SKILL_HOME` is not set. Set `PDF2ZH_SKILL_OUTPUT_DIR` to choose another durable location; `PDF2ZH_SKILL_TMPDIR` remains as a legacy alias for older setups.
+Each `run` creates a unique task folder under a persistent output root. By default this is `PDF2ZH_SKILL_HOME/runs`, or `~/pdf2zh-skill/runs` when `PDF2ZH_SKILL_HOME` is not set. Set `PDF2ZH_SKILL_OUTPUT_DIR` to choose another durable location; `PDF2ZH_SKILL_TMPDIR` is accepted as a compatibility alias, but new configs should prefer `PDF2ZH_SKILL_OUTPUT_DIR`.
 
 ```text
 pdf2zh-skill/YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
@@ -39,12 +40,16 @@ The final deliverables are named from the original PDF stem or, for arXiv URLs, 
 - `<name>_English.tex`
 - `<name>_中文.tex`
 - `<name>_中文.pdf`
+- `<name>_中英双语.tex`
+- `<name>_中英双语.pdf`
 
 Internal working files remain stable under `zh/`:
 
 - `merge_English.tex`
 - `merge_中文.tex`
 - `merge_中文.pdf`
+- `merge_中英双语.tex`
+- `merge_中英双语.pdf`
 - `segments_English.jsonl`
 - `glossary_English.json`
 - `translations_中文.jsonl`
@@ -94,10 +99,12 @@ After `run` finishes, inspect:
 
 - `quality_report_中文.md`
 - `vision_pack/manifest.json`
+- `vision_pack_bilingual/manifest.json`
 - `zh/merge_中文.tex`
-- the LaTeX compile log if compilation needs manual repair
+- `zh/merge_中英双语.tex`
+- the LaTeX compile log if compilation needs final correction
 
-The framework handles deterministic cleanup and detection. Complex LaTeX template issues and final visual alignment are intentionally handled by the model by editing `zh/merge_中文.tex` and recompiling.
+The framework handles deterministic cleanup and detection. Complex LaTeX template issues and final visual alignment are intentionally handled by the model by editing `zh/merge_中文.tex` or `zh/merge_中英双语.tex` and recompiling.
 
 ## Examples
 

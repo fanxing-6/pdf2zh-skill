@@ -1,11 +1,11 @@
 ---
 name: pdf2zh-skill
-description: Convert English academic papers from PDF or arXiv/LaTeX sources into Chinese PDF outputs. Use when Codex is asked to translate academic PDFs, DOC2X/Mathpix PDF-to-TeX outputs, or arXiv-style LaTeX projects while preserving formulas, citations, figures, and layout as much as practical.
+description: Convert English academic papers from PDF or arXiv/LaTeX sources into Chinese and green-Chinese bilingual PDF outputs. Use when Codex is asked to translate academic PDFs, DOC2X/Mathpix PDF-to-TeX outputs, or arXiv-style LaTeX projects while preserving formulas, citations, figures, and layout as much as practical.
 ---
 
 # PDF LaTeX 中文化
 
-使用本 Skill 将英文论文 PDF 或 LaTeX 项目转成中文 PDF。流程默认包含：解析/源码获取、分段翻译、术语一致性复审、编译、视觉对照包生成、质量审阅清单生成，然后由 Codex 基于 PDF、TeX、日志和审阅清单进行必要的二次修稿。
+使用本 Skill 将英文论文 PDF 或 LaTeX 项目转成中文 PDF，并默认额外生成一份中英双语 PDF。双语版复用同一份复审后的中文译文，不再次调用翻译 API；普通正文必须采用逐句对照格式，即一个英文句子后紧跟一个绿色中文句子，而不是英文段落后追加整段中文。章节标题、图注、标题和列表标记等 LaTeX 结构仍只保留一份命令或标记，中文以绿色补充在同一结构内或该条目正文内。流程默认包含：解析/源码获取、分段翻译、术语一致性复审、中文单语编译、双语拼接与编译、视觉对照包生成、质量审阅清单生成，然后由 Codex 基于 PDF、TeX、日志和审阅清单进行必要的二次修稿。
 
 ## 运行时基线
 
@@ -37,7 +37,7 @@ python scripts/pdf2zh_pipeline.py check-config
 
 ## 输出目录
 
-默认输出根目录必须是可持久目录，而不是系统临时目录。未显式指定时，使用 `PDF2ZH_SKILL_HOME/runs/`；若 `PDF2ZH_SKILL_HOME` 也未设置，则使用用户主目录下的 `pdf2zh-skill/runs/`。需要自定义交付位置时，优先设置 `PDF2ZH_SKILL_OUTPUT_DIR`；旧的 `PDF2ZH_SKILL_TMPDIR` 仅作为兼容别名保留，不应在新配置中优先使用。
+默认输出根目录必须是可持久目录，而不是系统临时目录。未显式指定时，使用 `PDF2ZH_SKILL_HOME/runs/`；若 `PDF2ZH_SKILL_HOME` 也未设置，则使用用户主目录下的 `pdf2zh-skill/runs/`。需要自定义交付位置时，优先设置 `PDF2ZH_SKILL_OUTPUT_DIR`；兼容场景中仍接受 `PDF2ZH_SKILL_TMPDIR` 作为别名，但新配置不应优先使用。
 
 如果用户给出的本地 PDF 或 `--source-pdf` 位于上传缓存、系统临时目录、浏览器下载临时目录等易丢失位置，`run` 必须先把源 PDF 复制到本次任务目录的 `source/` 子目录，并在后续 DOC2X/Mathpix/text 转换、视觉对照包和 `run_summary.json` 中使用这份持久副本。这样即使 Codex、WSL 或系统重启，最终 PDF、TeX、视觉对照材料和源 PDF 副本仍在同一个任务目录内。
 
@@ -53,16 +53,21 @@ YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
 - `source/`：本地输入 PDF 或 `--source-pdf` 的持久副本；URL 下载和 arXiv 源码流程可按转换结果保存在 `convert/`
 - `zh/`：内部工作目录
 - `vision_pack/`：原 PDF 与中文 PDF 的页面对照图，若缺少源 PDF 则在 `run_summary.json` 中记录跳过原因
+- `vision_pack_bilingual/`：原 PDF 与中英双语 PDF 的页面对照图，若缺少源 PDF 则在 `run_summary.json` 中记录跳过原因
 - `run_summary.json`：运行摘要、主要产物路径和 Windows 可见路径
 - `<原文件名或论文标题>_English.tex`
 - `<原文件名或论文标题>_中文.tex`
 - `<原文件名或论文标题>_中文.pdf`
+- `<原文件名或论文标题>_中英双语.tex`
+- `<原文件名或论文标题>_中英双语.pdf`
 
 内部工作目录保留稳定文件名：
 
 - `merge_English.tex`
 - `merge_中文.tex`
 - `merge_中文.pdf`
+- `merge_中英双语.tex`
+- `merge_中英双语.pdf`
 - `segments_English.jsonl`
 - `glossary_English.json`
 - `translations_中文.jsonl`
@@ -95,8 +100,9 @@ python scripts/pdf2zh_pipeline.py run --project relative/or/external/tex-project
 6. 回填生成 `merge_中文.tex`
 7. 生成 `quality_report_中文.json` 和 `quality_report_中文.md`
 8. 编译 `merge_中文.pdf`
-9. 生成 `vision_pack/`
-10. 导出原文件名或论文标题后缀的最终交付物
+9. 基于同一份复审译文生成并编译 `merge_中英双语.tex` / `merge_中英双语.pdf`
+10. 生成 `vision_pack/` 与 `vision_pack_bilingual/`
+11. 导出原文件名或论文标题后缀的最终交付物，其中 `pdf`、`tex` 字段仍指向中文单语版，`bilingual_pdf`、`bilingual_tex` 指向双语版
 
 拆阶段调试时再使用子命令：
 
@@ -106,8 +112,10 @@ python scripts/pdf2zh_pipeline.py convert --pdf paper.pdf --out work/pdf_tex --m
 python scripts/pdf2zh_pipeline.py prepare --project work/pdf_tex --work work/zh
 python scripts/pdf2zh_pipeline.py translate --work work/zh --workers 50
 python scripts/pdf2zh_pipeline.py apply --work work/zh --translations work/zh/translations_中文.jsonl
+python scripts/pdf2zh_pipeline.py apply-bilingual --work work/zh --translations work/zh/translations_reviewed_中文.jsonl
 python scripts/pdf2zh_pipeline.py quality-check --work work/zh
 python scripts/pdf2zh_pipeline.py compile --work work/zh
+python scripts/pdf2zh_pipeline.py compile --work work/zh --main merge_中英双语
 python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf --translated-pdf work/zh/merge_中文.pdf --tex work/zh/merge_中文.tex --out work/vision_pack --pages 1-3
 ```
 
@@ -119,10 +127,12 @@ python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf 
 
 - `quality_report_中文.md`：提示词泄漏、明显英文残留、坏引用、Markdown 残留、占位符泄漏、异常命令进入正文
 - `vision_pack/manifest.json`：原 PDF 与中文 PDF 的页面对照图
+- `vision_pack_bilingual/manifest.json`：原 PDF 与中英双语 PDF 的页面对照图，重点检查中文是否为绿色、章节标题和图注是否没有重复编号
 - `merge_中文.tex`：需要修复时只改内部工作文件，不改原始 source
+- `merge_中英双语.tex`：双语拼接或颜色问题需要修复时只改内部工作文件，不改原始 source
 - 编译日志：复杂模板和宏包冲突可由模型按日志手工修
 
-不要把中英文长度差异导致的自然分页变化当成缺陷。中文文本变短或变长引起的页数变化、图表提前或延后、段落落到相邻页属于可接受漂移。优先修复同页内标题块、作者区、图注块、列表块、对齐、空白结构和明显文本污染。
+不要把中英文长度差异导致的自然分页变化当成缺陷。中文文本变短或变长引起的页数变化、图表提前或延后、段落落到相邻页属于可接受漂移；双语版本页数明显增加也属于正常现象。优先修复同页内标题块、作者区、图注块、列表块、对齐、空白结构、章节或 label 重复、中文未变绿和明显文本污染。
 
 ## 翻译与修复规则
 
@@ -135,6 +145,8 @@ python scripts/pdf2zh_pipeline.py prepare-vision-pack --source-pdf original.pdf 
 - `\item` 与正文粘连
 - Markdown 加粗、下划线加粗和单反引号残留
 - 模型输出原文回声
+
+中英双语版的中文侧必须来自 `translations_reviewed_中文.jsonl`，或在用户显式跳过一致性复审时来自当前 `run` 实际用于 `apply` 的同一份 translations。双语拼接时普通正文必须输出为“英文句子、绿色中文句子、英文句子、绿色中文句子”的逐句交错结果；不得退回“英文段落、绿色中文段落”的块状双语方案。`\section`、`\subsection`、`\paragraph`、`\caption{...}` 和 `\item` 等结构只保留一份命令或标记，中文以绿色追加在同一结构内或同一条目正文内；`\label{...}`、citation key、BibTeX key、文件路径、公式、表格和图片路径不得翻译或重复。
 
 质量报告中的 error 级问题会先进入自动修复通道；坏引用、占位符泄漏、双反斜杠引用、列表结构破坏和 LaTeX 控制词拆分等问题若修复后仍存在，会阻断编译并在 `run_summary.json` 中记录 `quality_failed`。warning 级问题继续作为模型二次审阅线索，不默认阻断编译。复杂编译错误和版式细节由 Codex 根据日志和视觉对照修复；若编译日志仍有严重错误但已经生成可读 PDF，流程会尽量生成诊断用 `vision_pack/`。
 

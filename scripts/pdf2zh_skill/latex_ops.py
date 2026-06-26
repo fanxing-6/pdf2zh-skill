@@ -79,6 +79,7 @@ def normalize_problem_unicode(text: str) -> str:
         "←": r"\ensuremath{\leftarrow}",
         "⇒": r"\ensuremath{\Rightarrow}",
         "⇐": r"\ensuremath{\Leftarrow}",
+        "‑": "-",
     }
     chars: list[str] = []
     for ch in text:
@@ -959,9 +960,11 @@ def fix_translation(translated: str, original: str) -> str:
     if original.count(r"\begin") != translated.count(r"\begin"):
         return original
     if brace_balance(original) != brace_balance(translated):
-        translated = join_most_matching_braces(translated, original)
+        if brace_balance(original) == 0:
+            translated = join_most_matching_braces(translated, original)
     translated = normalize_reference_command_arguments(translated)
     translated = restore_reference_command_inventory(translated, original)
+    translated = append_missing_reference_commands(translated, original)
     return translated
 
 
@@ -972,6 +975,31 @@ def reference_commands(text: str) -> list[str]:
 def reference_command_name(command: str) -> str:
     match = re.match(r"\\([A-Za-z@]+)", command)
     return match.group(1) if match else ""
+
+
+def append_missing_reference_commands(translated: str, original: str) -> str:
+    original_refs = reference_commands(original)
+    if not original_refs:
+        return translated
+    remaining = reference_commands(translated)
+    missing: list[str] = []
+    for ref in original_refs:
+        if ref in remaining:
+            remaining.remove(ref)
+        else:
+            missing.append(ref)
+    if not missing:
+        return translated
+
+    suffix = " ".join(missing)
+    stripped = translated.rstrip()
+    trailing = translated[len(stripped) :]
+    if not stripped:
+        return suffix + trailing
+    punctuation = re.search(r"([。！？.!?])$", stripped)
+    if punctuation:
+        return stripped[: punctuation.start()] + " " + suffix + punctuation.group(1) + trailing
+    return stripped + " " + suffix + trailing
 
 
 def bad_reference_command_pattern() -> re.Pattern:
@@ -1067,8 +1095,15 @@ def brace_balance(text: str) -> int:
 def pdf_is_readable(pdf: Path) -> bool:
     if not pdf.is_file() or not shutil.which("pdfinfo"):
         return pdf.is_file()
-    proc = subprocess.run(["pdfinfo", str(pdf)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    return proc.returncode == 0 and "Pages:" in proc.stdout
+    proc = subprocess.run(
+        ["pdfinfo", str(pdf)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.returncode == 0 and "Pages:" in (proc.stdout or "")
 
 def compiler_for(tex_path: Path) -> str:
     content = tex_path.read_text(encoding="utf-8", errors="ignore")[:10000]
@@ -1088,7 +1123,16 @@ def compiler_for(tex_path: Path) -> str:
 def run(cmd: list[str], cwd: Path, timeout: int = 120) -> bool:
     print("+ " + " ".join(cmd))
     try:
-        proc = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired:
         print("command timed out", file=sys.stderr)
         return False

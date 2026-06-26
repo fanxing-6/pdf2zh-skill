@@ -282,10 +282,17 @@ def load_dotenv_candidates(explicit_env_file: str | None = None) -> list[Path]:
 def pdf_page_count(pdf: Path) -> int | None:
     if not shutil.which("pdfinfo"):
         return None
-    proc = subprocess.run(["pdfinfo", str(pdf)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(
+        ["pdfinfo", str(pdf)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if proc.returncode != 0:
         return None
-    match = re.search(r"^Pages:\s+(\d+)\s*$", proc.stdout, re.M)
+    match = re.search(r"^Pages:\s+(\d+)\s*$", proc.stdout or "", re.M)
     return int(match.group(1)) if match else None
 
 def parse_page_spec(spec: str, total_pages: int | None = None) -> list[int]:
@@ -329,7 +336,14 @@ def render_pdf_pages(pdf: Path, output_dir: Path, pages: list[int], prefix: str)
             str(pdf),
             str(stem),
         ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         if proc.returncode != 0:
             die(f"pdftoppm failed for {pdf} page {page}: {proc.stderr or proc.stdout}")
         rendered_png = stem.with_suffix(".png")
@@ -452,6 +466,8 @@ def is_probably_untranslated(original: str, translated: str) -> bool:
         return True
     if is_latex_identity_frontmatter_segment(original):
         return False
+    if is_latex_url_footnote_segment(original):
+        return False
     stripped_translation = translated.strip()
     if (
         stripped_translation.startswith("[")
@@ -463,12 +479,28 @@ def is_probably_untranslated(original: str, translated: str) -> bool:
     translated_cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in translated)
     if original_letters < 80:
         return False
+    if translated_cjk >= 4 and is_latex_proper_noun_list_fragment(original):
+        return False
     return translated_cjk < max(8, original_letters // 80)
 
 
 def is_latex_identity_frontmatter_segment(text: str) -> bool:
     frontmatter_commands = r"\\(?:author|email|affiliation|institution|orcid|city|country)\{"
     return bool(re.search(frontmatter_commands, text)) and text.count("\\") >= 2
+
+
+def is_latex_url_footnote_segment(text: str) -> bool:
+    compact = compact_whitespace(text)
+    return bool(re.fullmatch(r"\\footnotetext\[\d+\]\{https?://[^{}]+\}", compact))
+
+
+def is_latex_proper_noun_list_fragment(text: str) -> bool:
+    stripped = text.strip()
+    if re.search(r"[.!?]\s*$", stripped):
+        return False
+    if not re.search(r"\\(?:cite|citep|citet|footnote)\b", text):
+        return False
+    return bool(re.search(r"\([A-Z][A-Za-z0-9_.-]*(?:,|\)|\\footnote|~\\cite)", text))
 
 def compact_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()

@@ -8,6 +8,9 @@ from .vision import *
 
 ENGLISH_MERGED_BASENAME = "merge_English"
 CHINESE_MERGED_BASENAME = "merge_中文"
+BILINGUAL_MERGED_BASENAME = "merge_中英双语"
+BILINGUAL_COLOR_NAME = "pdf2zhChineseGreen"
+INLINE_BILINGUAL_ARG_COMMANDS = {"caption", "title"}
 ENGLISH_SEGMENTS_NAME = "segments_English.jsonl"
 ENGLISH_DEBUG_SEGMENTS_NAME = "debug_segments_English.html"
 ENGLISH_GLOSSARY_NAME = "glossary_English.json"
@@ -136,10 +139,14 @@ def export_named_outputs(output_dir: Path, work: Path, artifact_base: str) -> di
         "english_tex": output_dir / f"{artifact_base}_English.tex",
         "tex": output_dir / f"{artifact_base}_中文.tex",
         "pdf": output_dir / f"{artifact_base}_中文.pdf",
+        "bilingual_tex": output_dir / f"{artifact_base}_中英双语.tex",
+        "bilingual_pdf": output_dir / f"{artifact_base}_中英双语.pdf",
     }
     shutil.copy2(work / f"{ENGLISH_MERGED_BASENAME}.tex", exports["english_tex"])
     shutil.copy2(work / f"{CHINESE_MERGED_BASENAME}.tex", exports["tex"])
     shutil.copy2(work / f"{CHINESE_MERGED_BASENAME}.pdf", exports["pdf"])
+    shutil.copy2(work / f"{BILINGUAL_MERGED_BASENAME}.tex", exports["bilingual_tex"])
+    shutil.copy2(work / f"{BILINGUAL_MERGED_BASENAME}.pdf", exports["bilingual_pdf"])
     return exports
 
 
@@ -201,6 +208,7 @@ def cmd_prepare(args: argparse.Namespace) -> None:
     if source_bbl.is_file():
         shutil.copy2(source_bbl, work / f"{ENGLISH_MERGED_BASENAME}.bbl")
         shutil.copy2(source_bbl, work / f"{CHINESE_MERGED_BASENAME}.bbl")
+        shutil.copy2(source_bbl, work / f"{BILINGUAL_MERGED_BASENAME}.bbl")
     merged = sanitize_latex_source(inject_chinese_support(merge_tex(source, main)))
     (work / f"{ENGLISH_MERGED_BASENAME}.tex").write_text(merged, encoding="utf-8")
     nodes = split_nodes(merged)
@@ -594,6 +602,64 @@ def cmd_prepare_vision_pack(args: argparse.Namespace) -> None:
     log_path_hint("Vision review manifest", pack_dir / "manifest.json")
     print(pack_dir)
 
+
+def localize_preserved_text_for_chinese(text: str) -> str:
+    """Localize small prose fragments that were preserved with LaTeX refs."""
+    if not text:
+        return text
+    text = re.sub(r"\bFigures~", "图~", text)
+    text = re.sub(r"\bFigure~", "图~", text)
+    text = re.sub(r"\bTables~", "表~", text)
+    text = re.sub(r"\bTable~", "表~", text)
+    text = re.sub(r"\bAppendices~", "附录~", text)
+    text = re.sub(r"\bAppendix~", "附录~", text)
+    text = re.sub(r",\s*(\\cite(?:t|p)?\{[^{}]+\}),\s*and\s+(\\cite(?:t|p)?\{[^{}]+\})", r"、\1 和 \2", text)
+    text = re.sub(r",\s*and\s+(\\cite(?:t|p)?\{[^{}]+\})", r" 和 \1", text)
+    text = re.sub(r"^\s*,\s*(\\cite(?:t|p)?\{[^{}]+\})", r"、\1", text)
+    text = re.sub(r"(\\ref\{[^{}]+\}),\s*and\s+(~?\\ref\{)", r"\1、\2", text)
+    text = re.sub(r"(\\ref\{[^{}]+\}),\s+(~?\\ref\{)", r"\1、\2", text)
+    text = re.sub(r"(\\ref\{[^{}]+\})\s+and\s+(\\ref\{)", r"\1 和 \2", text)
+    text = re.sub(r",\s*and\s+(?=(?:~?\\ref\{|[A-Z][A-Za-z0-9-]*~\\citep\{|[A-Z][A-Za-z0-9-]*))", "、", text)
+    text = re.sub(r"^\s*,\s*(?=[A-Z][A-Za-z0-9-]*(?:~\\citep\{|\\footnote|\b))", "、", text)
+    text = text.replace(", or delta tuning", "，以及 delta tuning")
+    text = text.replace(" and token merging", "和 token merging")
+    text = text.replace(" for more details on datasets.", "了解数据集的更多细节。")
+    text = text.replace(" for detailed information.", "，以了解详细信息。")
+    text = text.replace(" and 附录~", "另见附录~")
+    return text
+
+
+def with_abstract_name(text: str, title: str) -> str:
+    if r"\begin{abstract}" not in text:
+        return text
+    marker = "% pdf2zh-skill abstract name"
+    if marker in text:
+        return text
+    insertion = (
+        marker
+        + "\n"
+        + rf"\providecommand{{\abstractname}}{{{title}}}"
+        + "\n"
+        + rf"\renewcommand{{\abstractname}}{{{title}}}"
+        + "\n"
+    )
+    begin_doc = re.search(r"\\begin\{document\}", text)
+    if begin_doc:
+        return text[: begin_doc.start()] + insertion + text[begin_doc.start() :]
+    return insertion + text
+
+
+def localize_support_files_for_chinese(work: Path) -> None:
+    for style_path in work.glob("*.sty"):
+        try:
+            text = style_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        updated = text.replace(r"\centerline{\large\bf Abstract}", r"\centerline{\large\bf 摘要}")
+        if updated != text:
+            style_path.write_text(updated, encoding="utf-8")
+
+
 def cmd_apply(args: argparse.Namespace) -> None:
     work = Path(args.work).resolve()
     state_path = work / "pipeline_state.json"
@@ -603,13 +669,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
     translations = {row["id"]: row.get("translation", "") for row in load_jsonl(Path(args.translations).resolve())}
     if not translations:
         die("translation JSONL is empty")
+    localize_support_files_for_chinese(work)
 
     pieces: list[str] = []
     missing: list[str] = []
     reverted: list[str] = []
     for node in state["nodes"]:
         if node["kind"] == PRESERVE:
-            pieces.append(node["text"])
+            pieces.append(localize_preserved_text_for_chinese(node["text"]))
             continue
         segment_id = node["segment_id"]
         translated = translations.get(segment_id)
@@ -629,8 +696,636 @@ def cmd_apply(args: argparse.Namespace) -> None:
     final_text = "".join(pieces)
     final_text = normalize_frontmatter_content(final_text)
     final_text = normalize_frontmatter_layout(final_text)
+    final_text = with_abstract_name(final_text, "摘要")
+    final_text = with_bibliography_input(final_text, f"{CHINESE_MERGED_BASENAME}.bbl")
     out.write_text(sanitize_latex_source(final_text), encoding="utf-8")
     print(out)
+
+
+STRUCTURAL_BILINGUAL_COMMANDS = {
+    "title",
+    "section",
+    "subsection",
+    "subsubsection",
+    "paragraph",
+    "subparagraph",
+}
+
+
+def latex_command_at(text: str, start: int, allowed: set[str]) -> dict | None:
+    pattern = re.compile(
+        r"\\(?P<name>[A-Za-z@]+)(?P<star>\*)?(?P<options>(?:\s*\[[^\]]*\])*)\s*\{",
+        re.S,
+    )
+    match = pattern.match(text, start)
+    if not match or match.group("name") not in allowed:
+        return None
+
+    index = match.end()
+    depth = 1
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return {
+                    "name": match.group("name"),
+                    "start": match.start(),
+                    "arg_start": match.end(),
+                    "arg_end": index,
+                    "end": index + 1,
+                    "open": text[match.start() : match.end()],
+                    "arg": text[match.end() : index],
+                }
+        index += 1
+    return None
+
+
+def first_latex_command(text: str, allowed: set[str]) -> dict | None:
+    pattern = re.compile(r"\\(?:%s)(?:\*)?(?:\s*\[[^\]]*\])*\s*\{" % "|".join(sorted(allowed)))
+    for match in pattern.finditer(text):
+        command = latex_command_at(text, match.start(), allowed)
+        if command:
+            return command
+    return None
+
+
+def strip_label_commands(text: str) -> str:
+    return re.sub(r"\\label\s*\{[^{}]*\}", "", text)
+
+
+def normalize_bilingual_inline_latex(text: str) -> str:
+    color_names = {
+        "蓝色": "blue",
+        "红色": "red",
+        "绿色": "green",
+        "灰色": "gray",
+        "黑色": "black",
+        "白色": "white",
+        "黄色": "yellow",
+    }
+
+    def color_repl(match: re.Match) -> str:
+        zh_color = match.group(1)
+        body = match.group(2).strip()
+        color = color_names[zh_color]
+        if body.lower() in {"blue", "red", "green", "gray", "grey", "black", "white", "yellow"}:
+            body = zh_color
+        return rf"\textcolor{{{color}}}{{{body}}}"
+
+    text = re.sub(r"\\textcolor\{(蓝色|红色|绿色|灰色|黑色|白色|黄色)\}\{([^{}]*)\}", color_repl, text)
+    text = re.sub(r"\\hl\{([^{}]*)\}", r"\\textbf{\1}", text)
+    return compact_whitespace(text)
+
+
+def green_inline(text: str) -> str:
+    content = normalize_bilingual_inline_latex(strip_label_commands(text).strip())
+    if not content:
+        return ""
+    return rf"\textcolor{{{BILINGUAL_COLOR_NAME}}}{{{content}}}"
+
+
+def green_block(text: str) -> str:
+    content = strip_label_commands(text).strip()
+    if not content:
+        return ""
+    return f"\n\n\\begingroup\\color{{{BILINGUAL_COLOR_NAME}}}\n{content}\n\\endgroup\n\n"
+
+
+def green_sentence(text: str) -> str:
+    content = normalize_bilingual_inline_latex(strip_label_commands(text).strip())
+    if not content:
+        return ""
+    return rf"{{\color{{{BILINGUAL_COLOR_NAME}}} {content}}}"
+
+
+def strip_leading_sentence_continuation(text: str) -> str:
+    # TeX segmentation often leaves ". Next sentence" or ", which ..." at the
+    # start of a node after citation-heavy text. For bilingual display, avoid
+    # rendering those marks as standalone sentence lines.
+    return re.sub(r"^\s*(?:[.;:。；：]\s+|[,，]\s*)+", "", text)
+
+
+def strip_bilingual_list_option_noise(text: str) -> str:
+    return re.sub(
+        r"^\s*\[[^\]\n]*(?:label|topsep|itemsep|leftmargin)[^\]\n]*\]\s*(?=\\item\b)",
+        "",
+        text,
+        count=1,
+    )
+
+
+def leading_sentence_mark(text: str) -> str | None:
+    match = re.match(r"^\s*([.!?;:。！？；：])(?=\s|[}\)]|$)", text)
+    return match.group(1) if match else None
+
+
+def strip_leading_sentence_mark(text: str) -> str:
+    return re.sub(r"^\s*([.!?;:。！？；：])(?=\s|[}\)]|$)\s*", "", text, count=1)
+
+
+def sentence_mark_to_chinese(mark: str) -> str:
+    return {
+        ".": "。",
+        "?": "？",
+        "!": "！",
+        ";": "；",
+        ":": "：",
+    }.get(mark, mark)
+
+
+def ends_with_sentence_mark(text: str) -> bool:
+    return bool(re.search(r"[.!?;:。！？；：]\s*(?:\}|\)|\])*\s*$", text))
+
+
+def ends_with_clause_mark(text: str) -> bool:
+    return bool(re.search(r"[,，.!?;:。！？；：]\s*(?:\}|\)|\])*\s*$", text))
+
+
+def protect_sentence_abbreviations(text: str) -> tuple[str, dict[str, str]]:
+    protected: dict[str, str] = {}
+    abbreviations = [
+        "e.g.",
+        "i.e.",
+        "et al.",
+        "Fig.",
+        "Figs.",
+        "Eq.",
+        "Eqs.",
+        "Sec.",
+        "Secs.",
+        "Tab.",
+        "Tabs.",
+        "No.",
+        "vs.",
+    ]
+    for index, token in enumerate(abbreviations):
+        placeholder = f"__PDF2ZH_SENT_ABBR_{index}__"
+        if token in text:
+            protected[placeholder] = token
+            text = text.replace(token, placeholder)
+    return text, protected
+
+
+def restore_sentence_abbreviations(text: str, protected: dict[str, str]) -> str:
+    for placeholder, token in protected.items():
+        text = text.replace(placeholder, token)
+    return text
+
+
+def split_bilingual_sentences(text: str) -> list[str]:
+    text = strip_bilingual_list_option_noise(text)
+    text = strip_leading_sentence_continuation(text)
+    text = compact_whitespace(text)
+    if not text:
+        return []
+    protected_text, protected = protect_sentence_abbreviations(text)
+    boundary = re.compile(r"(?<=[。！？；])|(?<=[.!?;:])\s+(?=(?:[A-Z0-9\\$]|\\[A-Za-z]))")
+    chunks: list[str] = []
+    start = 0
+    for match in boundary.finditer(protected_text):
+        chunk = protected_text[start : match.start()].strip()
+        if chunk and not re.fullmatch(r"[.,;:!?，。；：！？\s]+", chunk):
+            chunks.append(restore_sentence_abbreviations(chunk, protected))
+        start = match.end()
+    tail = protected_text[start:].strip()
+    if tail and not re.fullmatch(r"[.,;:!?，。；：！？\s]+", tail):
+        chunks.append(restore_sentence_abbreviations(tail, protected))
+    return chunks or [restore_sentence_abbreviations(protected_text.strip(), protected)]
+
+
+def group_chunks_to_count(chunks: list[str], target_count: int) -> list[str]:
+    if target_count <= 0:
+        return []
+    if len(chunks) <= target_count:
+        return chunks + [""] * (target_count - len(chunks))
+    grouped: list[str] = []
+    total = len(chunks)
+    for index in range(target_count):
+        start = round(index * total / target_count)
+        end = round((index + 1) * total / target_count)
+        grouped.append(" ".join(part for part in chunks[start:end] if part).strip())
+    return grouped
+
+
+def sentence_aligned_pairs(original: str, translated: str) -> list[tuple[str, str]]:
+    original_sentences = split_bilingual_sentences(original)
+    translated_sentences = split_bilingual_sentences(strip_repeated_segment_boundaries(original, translated))
+    if not original_sentences and not translated_sentences:
+        return []
+    if len(original_sentences) == len(translated_sentences):
+        return list(zip(original_sentences, translated_sentences))
+    pair_count = max(1, min(len(original_sentences) or 1, len(translated_sentences) or 1))
+    return list(zip(group_chunks_to_count(original_sentences, pair_count), group_chunks_to_count(translated_sentences, pair_count)))
+
+
+def sentence_pair_body(original: str, translated: str) -> str:
+    pairs: list[str] = []
+    for original_sentence, translated_sentence in sentence_aligned_pairs(original, translated):
+        original_sentence = original_sentence.strip()
+        translated_sentence = translated_sentence.strip()
+        pieces: list[str] = []
+        if original_sentence:
+            pieces.append(original_sentence)
+        green = green_sentence(translated_sentence)
+        if green:
+            pieces.append(green)
+        if pieces:
+            pairs.append(" ".join(pieces))
+    return " ".join(pairs)
+
+
+def sentence_pair_block(original: str, translated: str) -> str:
+    body = sentence_pair_body(original, translated)
+    if not body:
+        return ""
+    return f"\n\n{body}\n\n"
+
+
+def merge_bilingual_command_arg(original_arg: str, translated_arg: str) -> str:
+    zh = translated_arg.strip()
+    if not zh or compact_whitespace(zh) == compact_whitespace(original_arg):
+        return original_arg
+    return f"{original_arg} {{{green_inline(zh)}}}"
+
+
+def with_bilingual_color_support(text: str) -> str:
+    if r"\usepackage{xcolor}" not in text and not re.search(r"\\usepackage\[[^\]]*\]\{xcolor\}", text):
+        docclass = re.search(r"\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*", text)
+        load = "\\usepackage{xcolor}\n"
+        if docclass:
+            text = text[: docclass.end()] + load + text[docclass.end() :]
+        else:
+            text = load + text
+    define = rf"\definecolor{{{BILINGUAL_COLOR_NAME}}}{{RGB}}{{0,128,0}}"
+    if define not in text:
+        begin_doc = re.search(r"\\begin\{document\}", text)
+        insertion = define + "\n"
+        if begin_doc:
+            text = text[: begin_doc.start()] + insertion + text[begin_doc.start() :]
+        else:
+            text = insertion + text
+    return text
+
+
+def with_bilingual_frontmatter_spacing(text: str) -> str:
+    return re.sub(
+        r"(\\renewcommand\{\\thefootnote\}\{\\arabic\{footnote\}\}\s*)(\\begin\{abstract\})",
+        r"\1\n\\vspace*{7.0em}\n\2",
+        text,
+        count=1,
+    )
+
+
+def with_bibliography_input(text: str, bbl_name: str) -> str:
+    if (
+        re.search(r"\\(?:input|bibliography)\{[^{}]*\.?bbl[^{}]*\}", text)
+        or r"\bibliography{" in text
+        or r"\begin{thebibliography}" in text
+    ):
+        return text
+    insertion = "{\n    \\small\n    " + rf"\input{{{bbl_name}}}" + "\n}\n\n"
+    text, count = re.subn(
+        r"\{\s*\\small\s*\}\s*(?=\\newpage\s*\\appendix)",
+        lambda _match: insertion,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    if count:
+        return text
+    return re.sub(r"(?=\\newpage\s*\\appendix)", insertion, text, count=1)
+
+
+def translated_caption_arg(translated: str, translated_cmd: dict | None) -> str:
+    if translated_cmd:
+        return translated_cmd["arg"]
+    return re.sub(r"^\s*\\caption(?:\*)?(?:\s*\[[^\]]*\])*\s*\{", "", translated).strip()
+
+
+def bilingualize_caption_segment(original: str, translated: str) -> str | None:
+    original_cmd = first_latex_command(original, {"caption"})
+    translated_cmd = first_latex_command(translated, {"caption"})
+    if not original_cmd:
+        caption_open = re.search(r"\\caption(?:\*)?(?:\s*\[[^\]]*\])*\s*\{", original)
+        if not caption_open:
+            return None
+        translated_arg = translated_caption_arg(translated, translated_cmd)
+        green = green_inline(translated_arg)
+        if not green:
+            return original
+        trailing = original[len(original.rstrip()) :]
+        return original.rstrip() + f" {{{green}}}" + trailing
+
+    translated_arg = translated_caption_arg(translated, translated_cmd)
+    merged_arg = merge_bilingual_command_arg(original_cmd["arg"], translated_arg)
+    merged_caption = original_cmd["open"] + merged_arg + "}"
+    output = original[: original_cmd["start"]] + merged_caption + original[original_cmd["end"] :]
+    translated_tail = strip_label_commands(translated[translated_cmd["end"] :]).strip() if translated_cmd else ""
+    if translated_tail:
+        output += green_block(translated_tail)
+    return output
+
+
+def bilingualize_structural_segment(original: str, translated: str) -> str | None:
+    start = len(original) - len(original.lstrip())
+    translated_start = len(translated) - len(translated.lstrip())
+    original_cmd = latex_command_at(original, start, STRUCTURAL_BILINGUAL_COMMANDS)
+    translated_cmd = latex_command_at(translated, translated_start, STRUCTURAL_BILINGUAL_COMMANDS)
+    if not original_cmd or not translated_cmd or original_cmd["name"] != translated_cmd["name"]:
+        return None
+
+    merged_arg = merge_bilingual_command_arg(original_cmd["arg"], translated_cmd["arg"])
+    merged_command = original_cmd["open"] + merged_arg + "}"
+    output = original[: original_cmd["start"]] + merged_command
+    original_tail = original[original_cmd["end"] :]
+    translated_tail = strip_label_commands(translated[translated_cmd["end"] :])
+    original_tail_start = len(original_tail) - len(original_tail.lstrip())
+    translated_tail_start = len(translated_tail) - len(translated_tail.lstrip())
+    if latex_command_at(original_tail, original_tail_start, STRUCTURAL_BILINGUAL_COMMANDS) and latex_command_at(
+        translated_tail,
+        translated_tail_start,
+        STRUCTURAL_BILINGUAL_COMMANDS,
+    ):
+        output += bilingualize_segment(original_tail, translated_tail)
+    else:
+        output += sentence_pair_block(original_tail, translated_tail)
+    return output
+
+
+def bilingualize_item_segment(original: str, translated: str) -> str | None:
+    original = strip_bilingual_list_option_noise(original)
+    translated = strip_bilingual_list_option_noise(translated)
+    item_pattern = re.compile(r"(?m)(\s*\\item(?:\[[^\]]*\])?\s*)")
+    original_matches = list(item_pattern.finditer(original))
+    translated_matches = list(item_pattern.finditer(translated))
+    if not original_matches or not translated_matches:
+        return None
+    if original[: original_matches[0].start()].strip() or translated[: translated_matches[0].start()].strip():
+        return None
+    if len(original_matches) != len(translated_matches):
+        return None
+
+    pieces: list[str] = []
+    for index, original_match in enumerate(original_matches):
+        translated_match = translated_matches[index]
+        original_body_start = original_match.end()
+        original_body_end = original_matches[index + 1].start() if index + 1 < len(original_matches) else len(original)
+        translated_body_start = translated_match.end()
+        translated_body_end = translated_matches[index + 1].start() if index + 1 < len(translated_matches) else len(translated)
+        pieces.append(original_match.group(1))
+        pieces.append(sentence_pair_body(original[original_body_start:original_body_end], translated[translated_body_start:translated_body_end]))
+    return "".join(pieces)
+
+
+def strip_repeated_executable_commands(original: str, translated: str) -> str:
+    output = translated
+    duplicate_patterns = [
+        r"\\maketitle\b\s*",
+        r"(?m)^\\renewcommand\{\\thefootnote\}.*(?:\r?\n)?",
+    ]
+    for pattern in duplicate_patterns:
+        if re.search(pattern, original):
+            output = re.sub(pattern, "", output)
+    return output
+
+
+OPEN_ARGUMENT_TAIL_COMMANDS = {
+    "resizebox": 2,
+    "scalebox": 1,
+}
+
+
+def parse_balanced_brace_argument(text: str, start: int) -> int | None:
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 1
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def trailing_open_argument_command(text: str) -> tuple[int, str] | None:
+    stripped_end = len(text.rstrip())
+    candidate = text[:stripped_end]
+    if not candidate.endswith("{"):
+        return None
+    command_pattern = re.compile(r"\\([A-Za-z@]+)\*?\b")
+    for match in reversed(list(command_pattern.finditer(candidate))):
+        command = match.group(1)
+        arg_count = OPEN_ARGUMENT_TAIL_COMMANDS.get(command)
+        if arg_count is None:
+            continue
+        index = match.end()
+        for _ in range(arg_count):
+            while index < len(candidate) and candidate[index].isspace():
+                index += 1
+            parsed_end = parse_balanced_brace_argument(candidate, index)
+            if parsed_end is None:
+                break
+            index = parsed_end
+        else:
+            while index < len(candidate) and candidate[index].isspace():
+                index += 1
+            if index == len(candidate) - 1 and candidate[index] == "{":
+                return match.start(), text[match.start():]
+    return None
+
+
+def strip_repeated_segment_boundaries(original: str, translated: str) -> str:
+    output = strip_repeated_executable_commands(original, translated)
+    if re.match(r"^\s*\}(?:\\\\)?", original) and re.match(r"^\s*\}(?:\\\\)?", output):
+        output = re.sub(r"^\s*\}(?:\\\\)?\s*", "", output, count=1)
+    if trailing_open_argument_command(original):
+        translated_tail = trailing_open_argument_command(output)
+        if translated_tail:
+            tail_start, _tail = translated_tail
+            output = output[:tail_start].rstrip()
+    return output
+
+
+def bilingualize_open_argument_tail_segment(original: str, translated: str) -> str | None:
+    tail = trailing_open_argument_command(original)
+    if not tail:
+        return None
+    tail_start, _tail_text = tail
+    translated_body = strip_repeated_segment_boundaries(original, translated)
+    green = green_block(translated_body)
+    if not green:
+        return original
+    return original[:tail_start] + green + original[tail_start:]
+
+
+def escaped_at(text: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
+def update_caption_arg_depth(depth: int, text: str, command_names: set[str] | None = None) -> int:
+    names = command_names or {"caption"}
+    command_pattern = "|".join(sorted(re.escape(name) for name in names))
+    caption_open = re.compile(rf"\\(?:{command_pattern})(?:\*)?(?:\s*\[[^\]]*\])*\s*\{{")
+    index = 0
+    while index < len(text):
+        if depth == 0:
+            match = caption_open.search(text, index)
+            if not match:
+                break
+            depth = 1
+            index = match.end()
+            continue
+        char = text[index]
+        if char == "{" and not escaped_at(text, index):
+            depth += 1
+        elif char == "}" and not escaped_at(text, index):
+            depth = max(0, depth - 1)
+        index += 1
+    return depth
+
+
+def bilingualize_caption_text_fragment(original: str, translated: str) -> str:
+    if compact_whitespace(original) == compact_whitespace(translated):
+        return original
+    green = green_inline(translated)
+    if not green:
+        return original
+    trailing = original[len(original.rstrip()) :]
+    return original.rstrip() + f" {{{green}}}" + trailing
+
+
+def bilingualize_segment(original: str, translated: str) -> str:
+    original = strip_bilingual_list_option_noise(original)
+    translated = strip_bilingual_list_option_noise(translated)
+    if compact_whitespace(original) == compact_whitespace(translated):
+        return original
+    for builder in (
+        bilingualize_caption_segment,
+        bilingualize_structural_segment,
+        bilingualize_item_segment,
+        bilingualize_open_argument_tail_segment,
+    ):
+        output = builder(original, translated)
+        if output is not None:
+            return output
+    if brace_balance(original) != 0:
+        return bilingualize_caption_text_fragment(original, translated)
+    return sentence_pair_block(original, translated)
+
+
+def cmd_apply_bilingual(args: argparse.Namespace) -> None:
+    work = Path(args.work).resolve()
+    state_path = work / "pipeline_state.json"
+    if not state_path.is_file():
+        die(f"missing state file: {state_path}")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    translations = {row["id"]: row.get("translation", "") for row in load_jsonl(Path(args.translations).resolve())}
+    if not translations:
+        die("translation JSONL is empty")
+
+    pieces: list[str] = []
+    missing: list[str] = []
+    reverted: list[str] = []
+    caption_arg_depth = 0
+    nodes = state["nodes"]
+    index = 0
+    while index < len(nodes):
+        node = nodes[index]
+        if node["kind"] == PRESERVE:
+            pieces.append(node["text"])
+            caption_arg_depth = update_caption_arg_depth(caption_arg_depth, node["text"], INLINE_BILINGUAL_ARG_COMMANDS)
+            index += 1
+            continue
+
+        original_parts: list[str] = []
+        fixed_parts: list[str] = []
+        while index < len(nodes) and nodes[index]["kind"] == TRANSLATE:
+            translate_node = nodes[index]
+            segment_id = translate_node["segment_id"]
+            original_part = translate_node["text"]
+            translated = translations.get(segment_id)
+            if translated is None:
+                missing.append(segment_id)
+                translated = original_part
+            fixed_part = fix_translation(translated, original_part)
+            original_leading_mark = leading_sentence_mark(original_part)
+            fixed_leading_mark = leading_sentence_mark(fixed_part)
+            if fixed_parts and (fixed_leading_mark or original_leading_mark) and not ends_with_sentence_mark(fixed_parts[-1]):
+                fixed_parts[-1] += sentence_mark_to_chinese(fixed_leading_mark or original_leading_mark or ".")
+            if fixed_leading_mark:
+                fixed_part = strip_leading_sentence_mark(fixed_part)
+            original_leading_comma = re.match(r"^\s*[,，]\s*", original_part)
+            fixed_leading_comma = re.match(r"^\s*[,，]\s*", fixed_part)
+            if fixed_parts and (original_leading_comma or fixed_leading_comma):
+                if not ends_with_clause_mark(fixed_parts[-1]):
+                    fixed_parts[-1] += "，"
+                if fixed_leading_comma:
+                    fixed_part = fixed_part[fixed_leading_comma.end() :]
+            if fixed_part == original_part and translated != original_part:
+                reverted.append(segment_id)
+            original_parts.append(original_part)
+            fixed_parts.append(fixed_part)
+            index += 1
+
+        preserve_remainder: str | None = None
+        if index < len(nodes) and nodes[index]["kind"] == PRESERVE:
+            punctuation_match = re.fullmatch(r"([.!?。！？])(\s*)", nodes[index]["text"], flags=re.S)
+            leading_punctuation_match = re.match(r"^([.!?。！？])(\s+.*)$", nodes[index]["text"], flags=re.S)
+            if (punctuation_match or leading_punctuation_match) and original_parts:
+                mark = (punctuation_match or leading_punctuation_match).group(1)
+                preserve_remainder = leading_punctuation_match.group(2) if leading_punctuation_match else None
+                if not re.search(r"[.!?。！？]\s*$", original_parts[-1]):
+                    original_parts[-1] += mark
+                if fixed_parts and not re.search(r"[.!?。！？]\s*$", fixed_parts[-1]):
+                    fixed_parts[-1] += "。" if mark in ".!?" else mark
+                index += 1
+
+        original = "".join(original_parts)
+        fixed = "".join(fixed_parts)
+        rendered = (
+            bilingualize_caption_text_fragment(original, fixed)
+            if caption_arg_depth > 0
+            else bilingualize_segment(original, fixed)
+        )
+        pieces.append(rendered)
+        caption_arg_depth = update_caption_arg_depth(caption_arg_depth, rendered, INLINE_BILINGUAL_ARG_COMMANDS)
+        if preserve_remainder is not None:
+            pieces.append(preserve_remainder)
+            caption_arg_depth = update_caption_arg_depth(caption_arg_depth, preserve_remainder, INLINE_BILINGUAL_ARG_COMMANDS)
+    if missing:
+        print(f"warning: missing translations for {len(missing)} segments: {', '.join(missing[:10])}", file=sys.stderr)
+    if reverted:
+        print(f"warning: reverted {len(reverted)} risky bilingual translations: {', '.join(reverted[:10])}", file=sys.stderr)
+
+    out = work / f"{BILINGUAL_MERGED_BASENAME}.tex"
+    final_text = "".join(pieces)
+    final_text = normalize_frontmatter_content(final_text)
+    final_text = with_bilingual_color_support(final_text)
+    final_text = with_abstract_name(final_text, rf"Abstract {{\textcolor{{{BILINGUAL_COLOR_NAME}}}{{摘要}}}}")
+    final_text = with_bilingual_frontmatter_spacing(final_text)
+    final_text = with_bibliography_input(final_text, f"{BILINGUAL_MERGED_BASENAME}.bbl")
+    out.write_text(sanitize_latex_source(final_text), encoding="utf-8")
+    print(out)
+
 
 def cmd_compile(args: argparse.Namespace) -> None:
     work = Path(args.work).resolve()
@@ -1048,8 +1743,12 @@ def write_run_summary(
     quality_report_json: Path,
     quality_report_md: Path,
     quality_issue_count: int,
+    bilingual_pdf: Path | None = None,
+    bilingual_tex: Path | None = None,
     vision_pack: Path | None = None,
+    bilingual_vision_pack: Path | None = None,
     vision_pack_note: str | None = None,
+    bilingual_vision_pack_note: str | None = None,
 ) -> None:
     summary = {
         "status": status,
@@ -1058,12 +1757,14 @@ def write_run_summary(
         "project": str(project),
         "work": str(work),
         "work_pdf": str(work / f"{CHINESE_MERGED_BASENAME}.pdf"),
+        "work_bilingual_pdf": str(work / f"{BILINGUAL_MERGED_BASENAME}.pdf"),
         "segments_english": str(work / ENGLISH_SEGMENTS_NAME),
         "glossary_english": str(work / ENGLISH_GLOSSARY_NAME),
         "translations": str(work / CHINESE_TRANSLATIONS_NAME),
         "reviewed_translations": str(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
         "work_english_tex": str(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
         "work_tex": str(work / f"{CHINESE_MERGED_BASENAME}.tex"),
+        "work_bilingual_tex": str(work / f"{BILINGUAL_MERGED_BASENAME}.tex"),
         "consistency_report": str(work / CHINESE_CONSISTENCY_REPORT_NAME),
         "quality_report_json": str(quality_report_json),
         "quality_report_md": str(quality_report_md),
@@ -1080,24 +1781,36 @@ def write_run_summary(
         summary["english_tex"] = str(english_tex)
     if tex is not None:
         summary["tex"] = str(tex)
+    if bilingual_pdf is not None:
+        summary["bilingual_pdf"] = str(bilingual_pdf)
+    if bilingual_tex is not None:
+        summary["bilingual_tex"] = str(bilingual_tex)
     if vision_pack is not None:
         summary["vision_pack"] = str(vision_pack)
+    if bilingual_vision_pack is not None:
+        summary["bilingual_vision_pack"] = str(bilingual_vision_pack)
     if vision_pack_note:
         summary["vision_pack_note"] = vision_pack_note
+    if bilingual_vision_pack_note:
+        summary["bilingual_vision_pack_note"] = bilingual_vision_pack_note
     if is_wsl():
         windows_fields = {
             "project_windows": windows_visible_path(project),
             "work_windows": windows_visible_path(work),
             "pdf_windows": windows_visible_path(pdf) if pdf else None,
+            "bilingual_pdf_windows": windows_visible_path(bilingual_pdf) if bilingual_pdf else None,
             "work_pdf_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.pdf"),
+            "work_bilingual_pdf_windows": windows_visible_path(work / f"{BILINGUAL_MERGED_BASENAME}.pdf"),
             "segments_english_windows": windows_visible_path(work / ENGLISH_SEGMENTS_NAME),
             "glossary_english_windows": windows_visible_path(work / ENGLISH_GLOSSARY_NAME),
             "translations_windows": windows_visible_path(work / CHINESE_TRANSLATIONS_NAME),
             "reviewed_translations_windows": windows_visible_path(work / CHINESE_REVIEWED_TRANSLATIONS_NAME),
             "english_tex_windows": windows_visible_path(english_tex) if english_tex else None,
             "tex_windows": windows_visible_path(tex) if tex else None,
+            "bilingual_tex_windows": windows_visible_path(bilingual_tex) if bilingual_tex else None,
             "work_english_tex_windows": windows_visible_path(work / f"{ENGLISH_MERGED_BASENAME}.tex"),
             "work_tex_windows": windows_visible_path(work / f"{CHINESE_MERGED_BASENAME}.tex"),
+            "work_bilingual_tex_windows": windows_visible_path(work / f"{BILINGUAL_MERGED_BASENAME}.tex"),
             "consistency_report_windows": windows_visible_path(work / CHINESE_CONSISTENCY_REPORT_NAME),
             "quality_report_json_windows": windows_visible_path(quality_report_json),
             "quality_report_md_windows": windows_visible_path(quality_report_md),
@@ -1105,6 +1818,7 @@ def write_run_summary(
             "output_root_windows": windows_visible_path(skill_output_dir()),
             "tmp_root_windows": windows_visible_path(skill_tmp_dir()),
             "vision_pack_windows": windows_visible_path(vision_pack) if vision_pack else None,
+            "bilingual_vision_pack_windows": windows_visible_path(bilingual_vision_pack) if bilingual_vision_pack else None,
         }
         summary.update({k: v for k, v in windows_fields.items() if v})
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1328,11 +2042,50 @@ def cmd_run(args: argparse.Namespace) -> None:
         log_path_hint("Run summary", summary_path)
         raise
 
+    cmd_apply_bilingual(argparse.Namespace(work=str(work_dir), translations=str(translations_for_apply)))
+    try:
+        cmd_compile(
+            argparse.Namespace(
+                work=str(work_dir),
+                main=BILINGUAL_MERGED_BASENAME,
+                compiler=args.compiler,
+                timeout_seconds=args.compile_timeout_seconds,
+            )
+        )
+    except SystemExit:
+        work_pdf = work_dir / f"{CHINESE_MERGED_BASENAME}.pdf"
+        bilingual_work_pdf = work_dir / f"{BILINGUAL_MERGED_BASENAME}.pdf"
+        write_run_summary(
+            summary_path,
+            status="bilingual_compile_failed",
+            error=f"bilingual compile failed; inspect {work_dir / f'{BILINGUAL_MERGED_BASENAME}.log'} and repair {work_dir / f'{BILINGUAL_MERGED_BASENAME}.tex'}",
+            method=method,
+            source=source,
+            project=project,
+            work=work_dir,
+            pdf=work_pdf if work_pdf.is_file() else None,
+            english_tex=work_dir / f"{ENGLISH_MERGED_BASENAME}.tex",
+            tex=work_dir / f"{CHINESE_MERGED_BASENAME}.tex",
+            bilingual_pdf=bilingual_work_pdf if bilingual_work_pdf.is_file() else None,
+            bilingual_tex=work_dir / f"{BILINGUAL_MERGED_BASENAME}.tex",
+            quality_report_json=quality_json,
+            quality_report_md=quality_md,
+            quality_issue_count=quality_issue_count,
+            vision_pack_note="vision_pack was not generated because bilingual compile failed",
+            bilingual_vision_pack_note="vision_pack_bilingual was not generated because bilingual compile failed",
+        )
+        log_path_hint("Run summary", summary_path)
+        raise
+
     pdf = work_dir / f"{CHINESE_MERGED_BASENAME}.pdf"
+    bilingual_pdf = work_dir / f"{BILINGUAL_MERGED_BASENAME}.pdf"
     vision_pack: Path | None = None
+    bilingual_vision_pack: Path | None = None
     vision_pack_note: str | None = None
+    bilingual_vision_pack_note: str | None = None
     if source_pdf_for_pack is None or not source_pdf_for_pack.is_file():
         vision_pack_note = "source PDF was not available; vision_pack was not generated"
+        bilingual_vision_pack_note = "source PDF was not available; vision_pack_bilingual was not generated"
         log(f"Vision review pack: skipped ({vision_pack_note})")
     else:
         vision_pack = prepare_vision_review_pack(
@@ -1344,6 +2097,15 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         log_path_hint("Vision review pack", vision_pack)
         log_path_hint("Vision review manifest", vision_pack / "manifest.json")
+        bilingual_vision_pack = prepare_vision_review_pack(
+            source_pdf=source_pdf_for_pack,
+            translated_pdf=bilingual_pdf,
+            out_dir=output_dir / "vision_pack_bilingual",
+            pages_spec=args.vision_pages,
+            tex_path=work_dir / f"{BILINGUAL_MERGED_BASENAME}.tex",
+        )
+        log_path_hint("Bilingual vision review pack", bilingual_vision_pack)
+        log_path_hint("Bilingual vision review manifest", bilingual_vision_pack / "manifest.json")
     artifact_base = output_artifact_base_for_run(source=source, project=project, source_pdf=source_pdf_for_pack)
     exported = export_named_outputs(output_dir, work_dir, artifact_base)
     write_run_summary(
@@ -1355,16 +2117,22 @@ def cmd_run(args: argparse.Namespace) -> None:
         pdf=exported["pdf"],
         english_tex=exported["english_tex"],
         tex=exported["tex"],
+        bilingual_pdf=exported["bilingual_pdf"],
+        bilingual_tex=exported["bilingual_tex"],
         quality_report_json=quality_json,
         quality_report_md=quality_md,
         quality_issue_count=quality_issue_count,
         vision_pack=vision_pack,
+        bilingual_vision_pack=bilingual_vision_pack,
         vision_pack_note=vision_pack_note,
+        bilingual_vision_pack_note=bilingual_vision_pack_note,
     )
     log_path_hint("Run summary", summary_path)
     log_path_hint("English TeX", exported["english_tex"])
     log_path_hint("Chinese TeX", exported["tex"])
     log_path_hint("Chinese PDF", exported["pdf"])
+    log_path_hint("Bilingual TeX", exported["bilingual_tex"])
+    log_path_hint("Bilingual PDF", exported["bilingual_pdf"])
     print(exported["pdf"])
 
 def cmd_quality_check(args: argparse.Namespace) -> None:
@@ -1513,6 +2281,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--work", required=True)
     apply.add_argument("--translations", required=True)
     apply.set_defaults(func=cmd_apply)
+
+    apply_bilingual = sub.add_parser("apply-bilingual", help=f"apply translations JSONL and write {BILINGUAL_MERGED_BASENAME}.tex")
+    apply_bilingual.add_argument("--work", required=True)
+    apply_bilingual.add_argument("--translations", required=True)
+    apply_bilingual.set_defaults(func=cmd_apply_bilingual)
 
     compile_cmd = sub.add_parser("compile", help=f"compile {CHINESE_MERGED_BASENAME}.tex")
     compile_cmd.add_argument("--work", required=True)
