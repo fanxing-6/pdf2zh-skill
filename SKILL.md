@@ -78,6 +78,8 @@ YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
 
 普通 PDF 的交付文件使用原文件名 stem。arXiv URL 的交付文件优先使用论文标题；标题无法解析时回退到 arXiv ID。
 
+最终对用户汇报和交付时，必须优先给出任务根目录下的上述命名产物；`zh/merge_*.tex` 与 `zh/merge_*.pdf` 只作为内部工作文件和调试入口。若模型二次修稿或手工重编译更新了内部 `merge_*` 文件，正式交付前必须重新导出同名规则下的最终产物，并同步更新 `run_summary.json` 中的 `pdf`、`tex`、`bilingual_pdf` 和 `bilingual_tex` 字段。
+
 ## 主流程
 
 推荐只使用 `run`：

@@ -43,6 +43,8 @@ The final deliverables are named from the original PDF stem or, for arXiv URLs, 
 - `<name>_中英双语.tex`
 - `<name>_中英双语.pdf`
 
+User-facing handoff should point to these named files in the task root. Files named `zh/merge_*` are internal work artifacts; after any manual correction or recompile, copy the updated `merge_*` artifacts back to the named outputs and refresh `run_summary.json`.
+
 Internal working files remain stable under `zh/`:
 
 - `merge_English.tex`
