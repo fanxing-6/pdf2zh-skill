@@ -1,3 +1,5 @@
+
+
 # pdf2zh-skill
 
 `Thinking_with_Visual_Primitives.pdf`:
@@ -32,7 +34,7 @@ Use this repository as the update source for the skill:
 Each `run` creates a unique task folder under a persistent output root. By default this is `PDF2ZH_SKILL_HOME/runs`, or `~/pdf2zh-skill/runs` when `PDF2ZH_SKILL_HOME` is not set. Set `PDF2ZH_SKILL_OUTPUT_DIR` to choose another durable location; `PDF2ZH_SKILL_TMPDIR` is accepted as a compatibility alias, but new configs should prefer `PDF2ZH_SKILL_OUTPUT_DIR`.
 
 ```text
-pdf2zh-skill/YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
+pdf2zh-skill/runs/YYYYMMDD-HHMMSS-<source_slug>-<short_hash>/
 ```
 
 The final deliverables are named from the original PDF stem or, for arXiv URLs, the paper title when available:
